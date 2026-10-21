@@ -8,6 +8,7 @@ import {
   ToastMessage 
 } from './types';
 import { MockStore } from './lib/mockStore';
+import { supabase } from './lib/supabase';
 
 // Common Components
 import { Navbar } from './components/common/Navbar';
@@ -59,6 +60,60 @@ export function App() {
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
+
+  // Fetch live charities and draws from Supabase if connected
+  useEffect(() => {
+    const client = supabase;
+    if (!client) return;
+
+    const fetchSupabaseData = async () => {
+      try {
+        const { data: charityData, error: charityError } = await client
+          .from('charities')
+          .select('*');
+
+        if (!charityError && charityData && charityData.length > 0) {
+          const liveCharities = charityData.map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            slug: c.slug,
+            tagline: c.tagline,
+            description: c.description || '',
+            category: c.category,
+            logoUrl: c.logo_url,
+            website: c.website,
+            totalRaised: Number(c.total_raised_usd) || 0,
+            impactMetric: c.impact_metric || '',
+            active: Boolean(c.active),
+          }));
+          setCharities(liveCharities);
+        }
+
+        const { data: drawData, error: drawError } = await client
+          .from('draws')
+          .select('*');
+
+        if (!drawError && drawData && drawData.length > 0) {
+          const liveDraws = drawData.map((d: any) => ({
+            id: d.id,
+            title: d.title,
+            seasonMonth: d.season_month,
+            drawDate: d.draw_date,
+            status: d.status,
+            prizeTierLabel: d.prize_tier_label,
+            prizeValueUsd: Number(d.prize_value_usd) || 0,
+            charitySplitPercentage: d.charity_split_percentage || 50,
+            totalEntries: d.total_entries || 0,
+          }));
+          setDraws(liveDraws);
+        }
+      } catch (err) {
+        console.warn('Supabase fetch failed, continuing with local store:', err);
+      }
+    };
+
+    fetchSupabaseData();
+  }, []);
 
   // Sync state refresh
   const refreshAllState = () => {

@@ -6,12 +6,24 @@
 -- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. ENUMS
-CREATE TYPE user_role AS ENUM ('member', 'admin');
-CREATE TYPE membership_tier_type AS ENUM ('monthly', 'yearly', 'complimentary');
-CREATE TYPE verification_status_type AS ENUM ('pending', 'verified', 'rejected');
-CREATE TYPE payout_status_type AS ENUM ('pending', 'processing', 'paid');
-CREATE TYPE draw_status_type AS ENUM ('scheduled', 'in_progress', 'completed', 'cancelled');
+-- 2. ENUMS (Safe creation)
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
+        CREATE TYPE user_role AS ENUM ('member', 'admin');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'membership_tier_type') THEN
+        CREATE TYPE membership_tier_type AS ENUM ('monthly', 'yearly', 'complimentary');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'verification_status_type') THEN
+        CREATE TYPE verification_status_type AS ENUM ('pending', 'verified', 'rejected');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payout_status_type') THEN
+        CREATE TYPE payout_status_type AS ENUM ('pending', 'processing', 'paid');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'draw_status_type') THEN
+        CREATE TYPE draw_status_type AS ENUM ('scheduled', 'in_progress', 'completed', 'cancelled');
+    END IF;
+END $$;
 
 -- 3. CHARITIES TABLE
 CREATE TABLE IF NOT EXISTS public.charities (
@@ -64,7 +76,6 @@ CREATE TABLE IF NOT EXISTS public.scores (
     CONSTRAINT unique_user_score_date UNIQUE (user_id, score_date)
 );
 
--- Index for retrieving reverse-chronological latest 5 scores fast
 CREATE INDEX IF NOT EXISTS idx_scores_user_date ON public.scores(user_id, score_date DESC);
 
 -- 6. DRAWS TABLE
@@ -74,7 +85,7 @@ CREATE TABLE IF NOT EXISTS public.draws (
     season_month TEXT NOT NULL, -- e.g. "November 2026"
     draw_date TIMESTAMPTZ NOT NULL,
     status draw_status_type DEFAULT 'scheduled',
-    prize_tier_label TEXT NOT NULL, -- e.g. "Titleist Masters Experience + $5,000"
+    prize_tier_label TEXT NOT NULL,
     prize_value_usd NUMERIC(10, 2) NOT NULL,
     charity_split_percentage INTEGER DEFAULT 50,
     total_entries INTEGER DEFAULT 0,
@@ -120,6 +131,21 @@ ALTER TABLE public.scores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.draws ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.draw_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.winners ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if re-running
+DROP POLICY IF EXISTS "Public read active charities" ON public.charities;
+DROP POLICY IF EXISTS "Admins full access to charities" ON public.charities;
+DROP POLICY IF EXISTS "Users can read own profile and admins can read all" ON public.profiles;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
+DROP POLICY IF EXISTS "Users can read own scores" ON public.scores;
+DROP POLICY IF EXISTS "Users can insert own scores" ON public.scores;
+DROP POLICY IF EXISTS "Users can update own scores" ON public.scores;
+DROP POLICY IF EXISTS "Users can delete own scores" ON public.scores;
+DROP POLICY IF EXISTS "All authenticated users can view draws" ON public.draws;
+DROP POLICY IF EXISTS "Admins manage draws" ON public.draws;
+DROP POLICY IF EXISTS "Winners can view own winning records" ON public.winners;
+DROP POLICY IF EXISTS "Winners can submit proof for their winning record" ON public.winners;
+DROP POLICY IF EXISTS "Admins full access to winners" ON public.winners;
 
 -- Charities policies
 CREATE POLICY "Public read active charities"
@@ -220,4 +246,12 @@ VALUES
     ('c2222222-2222-2222-2222-222222222222', 'Fairways for Fair Oceans', 'fairways-oceans', 'Preserving coastal ecosystems and wetlands surrounding golf courses.', 'Funds native water-treatment biofilters, plastic recovery, and marine conservation near 120+ coastal links.', 'Environmental Conservation', 62300.00, '14 tons of marine debris intercepted', true),
     ('c3333333-3333-3333-3333-333333333333', 'Adaptive Fairways Alliance', 'adaptive-fairways', 'Bespoke mobility carts and adaptive swing equipment for para-golfers.', 'Pioneers accessible golf technologies, tournament sponsorship, and rehabilitation courses for injured veterans and athletes.', 'Disabled Golfers', 98150.00, '185 custom solo-rider carts distributed', true),
     ('c4444444-4444-4444-4444-444444444444', 'Honor Caddie Foundation', 'honor-caddie', 'Mental wellness retreats, camaraderie, and career pathways for veterans.', 'Uses golf as outdoor clinical therapy, pairing veterans with PGA certified professionals for rehabilitation.', 'Veteran Wellbeing', 54800.00, '94% self-reported improvement in mental resilience', true)
-ON CONFLICT (slug) DO NOTHING;
+ON CONFLICT (slug) DO UPDATE SET
+    total_raised_usd = EXCLUDED.total_raised_usd,
+    active = EXCLUDED.active;
+
+INSERT INTO public.draws (id, title, season_month, draw_date, status, prize_tier_label, prize_value_usd, charity_split_percentage, total_entries)
+VALUES
+    ('d1111111-1111-1111-1111-111111111111', 'The Autumn Invitational Major Draw', 'November 2026', NOW() + INTERVAL '14 days', 'scheduled', 'Titleist Custom Fitted Works + $5,000 Travel Stipend', 8500.00, 50, 1420),
+    ('d2222222-2222-2222-2222-222222222222', 'October Links Championship Draw', 'October 2026', NOW() - INTERVAL '16 days', 'completed', 'Scotty Cameron Tour Prototype & Bandon Dunes Trip', 6200.00, 50, 1280)
+ON CONFLICT (id) DO NOTHING;
