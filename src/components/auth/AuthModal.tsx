@@ -83,34 +83,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const trimmedEmail = email.trim();
     const trimmedFullName = fullName.trim();
 
-    // 1. Email validation
+    // 1. Full name (Signup only)
+    if (mode === 'signup') {
+      if (!trimmedFullName) {
+        newErrors.fullName = 'Full name is required.';
+      } else if (trimmedFullName.length < 2) {
+        newErrors.fullName = 'Full name must be at least 2 characters.';
+      } else if (trimmedFullName.length > 70) {
+        newErrors.fullName = 'Full name cannot exceed 70 characters.';
+      }
+    }
+
+    // 2. Email validation
     if (!trimmedEmail) {
       newErrors.email = 'Email address is required.';
     } else if (!EMAIL_REGEX.test(trimmedEmail)) {
       newErrors.email = 'Please enter a valid email address (e.g. golfer@domain.com).';
     }
 
-    // 2. Password validation
+    // 3. Password validation
     if (!password) {
       newErrors.password = 'Password is required.';
     } else if (password.length < 8) {
       newErrors.password = 'Password must be at least 8 characters in length.';
     }
 
-    // 3. Signup specific validation
+    // 4. Confirm password (Signup only)
     if (mode === 'signup') {
-      if (!trimmedFullName) {
-        newErrors.fullName = 'Full name is required.';
-      } else if (trimmedFullName.length < 2) {
-        newErrors.fullName = 'Full name must be at least 2 characters.';
-      }
-
       if (!confirmPassword) {
         newErrors.confirmPassword = 'Please confirm your password.';
       } else if (confirmPassword !== password) {
         newErrors.confirmPassword = 'Passwords do not match.';
       }
 
+      // 5. Handicap Index validation
       const numHandicap = parseFloat(handicap);
       if (isNaN(numHandicap) || numHandicap < -10 || numHandicap > 54) {
         newErrors.handicap = 'Handicap must be a number between -10.0 and 54.0.';
@@ -144,10 +150,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setIsLoading(true);
     const cleanEmail = email.trim().toLowerCase();
+    const targetUrl = import.meta.env.VITE_SUPABASE_URL || '';
 
     try {
       if (mode === 'signin') {
-        // --- REAL SUPABASE SIGNIN IF CONFIGURED ---
+        // --- REAL SUPABASE SIGNIN ---
         if (isSupabaseConfigured && supabase) {
           const { data, error } = await supabase.auth.signInWithPassword({
             email: cleanEmail,
@@ -155,14 +162,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           });
 
           if (error) {
-            if (error.message.includes('Invalid login credentials')) {
+            const msg = error.message || '';
+            if (msg.includes('Failed to fetch') || msg.includes('network') || error.status === 0) {
+              setErrors({
+                general: `Connection Error (Failed to fetch): Could not connect to Supabase at "${targetUrl}". The host cannot be resolved by DNS. Please verify your Project URL in Supabase Dashboard (Project Settings > Data API) and check your internet connection.`
+              });
+            } else if (msg.includes('Invalid login credentials')) {
               setErrors({ general: 'Invalid email or password. Please verify and try again.' });
-            } else if (error.message.includes('Email not confirmed')) {
-              setErrors({ general: 'Email address not yet confirmed. Please check your inbox for verification link.' });
+            } else if (msg.includes('Email not confirmed')) {
+              setErrors({ general: 'Email address not yet confirmed. Please click the verification link sent to your email.' });
             } else if (error.status === 429) {
-              setErrors({ general: 'Too many login attempts. Please wait a moment and try again.' });
+              setErrors({ general: 'Too many authentication attempts. Please wait 60 seconds and try again.' });
             } else {
-              setErrors({ general: error.message || 'Authentication error. Please check your network connection.' });
+              setErrors({ general: msg || 'Authentication error. Please check your network connection.' });
             }
             setIsLoading(false);
             return;
@@ -170,38 +182,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
           if (data.user) {
             // Find or build profile from Supabase user session
-            const match = profiles.find(p => p.email.toLowerCase() === cleanEmail) || {
+            const match: GolferProfile = {
               id: data.user.id,
               email: data.user.email || cleanEmail,
               fullName: data.user.user_metadata?.full_name || 'Verified Golfer',
               avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
               handicapIndex: data.user.user_metadata?.handicap_index || 12.0,
               homeClub: data.user.user_metadata?.home_club || 'Pebble Beach Links',
-              role: 'member',
+              role: (data.user.user_metadata?.role as any) || 'member',
               membershipTier: 'monthly',
               membershipActive: true,
               selectedCharityId: 'charity-1',
               totalDonated: 0,
-              createdAt: new Date().toISOString()
+              createdAt: data.user.created_at || new Date().toISOString()
             };
             onLogin(match);
             onClose();
             return;
           }
-        }
-
-        // --- LOCAL/OFFLINE SIGNIN FALLBACK ---
-        const match = profiles.find(p => p.email.toLowerCase() === cleanEmail);
-        if (match) {
-          onLogin(match);
-          onClose();
         } else {
-          setErrors({
-            general: `No registered account found with email "${cleanEmail}". Use one of the Demo Passports or switch to Create Account.`
-          });
+          // --- OFFLINE DEMO SIGNIN (When Supabase is not configured) ---
+          const match = profiles.find(p => p.email.toLowerCase() === cleanEmail);
+          if (match) {
+            onLogin(match);
+            onClose();
+          } else {
+            setErrors({
+              general: `[Offline Sandbox] No registered account found with email "${cleanEmail}". Use one of the Demo Passports above or switch to Create Account.`
+            });
+          }
         }
       } else {
-        // --- REAL SUPABASE SIGNUP IF CONFIGURED ---
+        // --- REAL SUPABASE SIGNUP ---
         if (isSupabaseConfigured && supabase) {
           const { data, error } = await supabase.auth.signUp({
             email: cleanEmail,
@@ -211,29 +223,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 full_name: fullName.trim(),
                 handicap_index: parseFloat(handicap) || 12.0,
                 home_club: homeClub.trim() || 'Augusta National GC',
+                role: 'member'
               }
             }
           });
 
           if (error) {
-            if (error.message.includes('User already registered') || error.message.includes('already exists')) {
-              setErrors({ email: 'An account with this email address already exists. Please sign in.' });
-            } else if (error.message.includes('Password should be')) {
-              setErrors({ password: error.message });
+            const msg = error.message || '';
+            if (msg.includes('Failed to fetch') || msg.includes('network') || error.status === 0) {
+              setErrors({
+                general: `Connection Error (Failed to fetch): Unable to reach the Supabase Auth server at "${targetUrl}". The host cannot be resolved by DNS. Please verify your Project URL in Supabase Dashboard (Project Settings > Data API) and ensure the project is active.`
+              });
+            } else if (msg.includes('User already registered') || msg.includes('already exists')) {
+              setErrors({ email: 'An account with this email address already exists. Please sign in instead.' });
+            } else if (msg.includes('Password should be')) {
+              setErrors({ password: msg });
             } else {
-              setErrors({ general: error.message || 'Registration failed. Please check network connection.' });
+              setErrors({ general: msg || 'Registration failed. Please check network connection.' });
             }
             setIsLoading(false);
             return;
           }
 
+          // Case A: Email confirmation required (Supabase default)
           if (data.user && !data.session) {
-            // Confirmation email sent
-            setSuccessMessage(`Account created for ${cleanEmail}! Please check your email inbox to confirm your registration before signing in.`);
+            setSuccessMessage(`Registration successful! A verification link has been sent to "${cleanEmail}". Please click the link in your email to confirm your account, then sign in.`);
             setIsLoading(false);
             return;
           }
 
+          // Case B: Immediate session (email confirmation turned off in Supabase)
           if (data.user && data.session) {
             const newProfile: GolferProfile = {
               id: data.user.id,
@@ -247,42 +266,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               membershipActive: true,
               selectedCharityId: 'charity-1',
               totalDonated: 0,
-              createdAt: new Date().toISOString()
+              createdAt: data.user.created_at || new Date().toISOString()
             };
             onLogin(newProfile);
             onClose();
             return;
           }
-        }
+        } else {
+          // --- OFFLINE DEMO SIGNUP (Only when Supabase credentials are missing in .env) ---
+          const existing = profiles.find(p => p.email.toLowerCase() === cleanEmail);
+          if (existing) {
+            setErrors({ email: 'An account with this email address already exists.' });
+            setIsLoading(false);
+            return;
+          }
 
-        // --- LOCAL/OFFLINE SIGNUP SIMULATION ---
-        // Check local duplicate email
-        const existing = profiles.find(p => p.email.toLowerCase() === cleanEmail);
-        if (existing) {
-          setErrors({ email: 'An account with this email address already exists.' });
-          setIsLoading(false);
-          return;
+          const newProfile: GolferProfile = {
+            id: 'user-' + Date.now(),
+            email: cleanEmail,
+            fullName: fullName.trim(),
+            avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=256',
+            handicapIndex: parseFloat(handicap) || 12.0,
+            homeClub: homeClub.trim() || 'Augusta National GC',
+            role: 'member',
+            membershipTier: 'monthly',
+            membershipActive: true,
+            selectedCharityId: 'charity-1',
+            totalDonated: 0,
+            createdAt: new Date().toISOString()
+          };
+          onLogin(newProfile);
+          onClose();
         }
-
-        const newProfile: GolferProfile = {
-          id: 'user-' + Date.now(),
-          email: cleanEmail,
-          fullName: fullName.trim(),
-          avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=256',
-          handicapIndex: parseFloat(handicap) || 12.0,
-          homeClub: homeClub.trim() || 'Augusta National GC',
-          role: 'member',
-          membershipTier: 'monthly',
-          membershipActive: true,
-          selectedCharityId: 'charity-1',
-          totalDonated: 0,
-          createdAt: new Date().toISOString()
-        };
-        onLogin(newProfile);
-        onClose();
       }
     } catch (err: any) {
-      setErrors({ general: 'A network or service failure occurred. Please try again.' });
+      const msg = err?.message || '';
+      if (msg.includes('Failed to fetch') || msg.includes('network') || msg.includes('fetch')) {
+        setErrors({
+          general: `Connection Error (Failed to fetch): Network request to "${targetUrl}" failed. Check that your Supabase project domain is active and correctly typed.`
+        });
+      } else {
+        setErrors({ general: msg || 'An unexpected authentication failure occurred. Please try again.' });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -300,7 +325,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
       maxWidth="md"
     >
-      {/* Quick Test Demo Logins - Explicitly labeled */}
+      {/* Quick Test Demo Passports */}
       <div className="bg-cream-200/80 rounded-xl p-3 mb-5 border border-stone-200">
         <div className="flex items-center justify-between mb-2">
           <p className="text-[11px] font-bold uppercase tracking-wider text-ink-600 flex items-center gap-1.5 font-mono">
@@ -385,7 +410,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <div 
           role="alert" 
           aria-live="polite"
-          className="p-3 mb-4 bg-rose-50 border border-rose-300 rounded-xl flex items-start gap-2.5 text-rose-800 text-xs animate-in fade-in duration-200"
+          className="p-3.5 mb-4 bg-rose-50 border border-rose-300 rounded-xl flex items-start gap-2.5 text-rose-800 text-xs leading-relaxed animate-in fade-in duration-200"
         >
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
           <span>{errors.general}</span>
@@ -397,7 +422,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <div 
           role="alert" 
           aria-live="polite"
-          className="p-3 mb-4 bg-emerald-50 border border-emerald-300 rounded-xl flex items-start gap-2.5 text-emerald-800 text-xs animate-in fade-in duration-200"
+          className="p-3.5 mb-4 bg-emerald-50 border border-emerald-300 rounded-xl flex items-start gap-2.5 text-emerald-800 text-xs leading-relaxed animate-in fade-in duration-200"
         >
           <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
           <span>{successMessage}</span>

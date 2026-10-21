@@ -86,7 +86,7 @@ A production-ready SQL database schema is included in [`supabase/schema.sql`](fi
 3. Copy your project URL and public `anon` key into `.env`:
    ```env
    VITE_SUPABASE_URL=https://your-project.supabase.co
-   VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
+   VITE_SUPABASE_ANON_KEY=your-publishable-anon-key
    ```
 4. Restart the app (`npm run dev`). The top bar will immediately reflect `⚡ Supabase Connected (Live DB)`.
 

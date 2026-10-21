@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS public.charities (
 );
 
 -- 4. PROFILES TABLE (Mirrors auth.users)
+-- Default membership_active is FALSE until a verified payment/subscription webhook confirms payment.
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email TEXT NOT NULL UNIQUE,
@@ -52,12 +53,16 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     home_club TEXT DEFAULT 'St. Andrews Old Course Links',
     role user_role DEFAULT 'member',
     membership_tier membership_tier_type DEFAULT 'monthly',
-    membership_active BOOLEAN DEFAULT TRUE,
+    membership_active BOOLEAN DEFAULT FALSE,
     selected_charity_id UUID REFERENCES public.charities(id) ON DELETE SET NULL,
-    total_donated_usd NUMERIC(10, 2) DEFAULT 120.00,
+    total_donated_usd NUMERIC(10, 2) DEFAULT 0.00,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure defaults on existing tables match strict billing requirements
+ALTER TABLE public.profiles ALTER COLUMN membership_active SET DEFAULT FALSE;
+ALTER TABLE public.profiles ALTER COLUMN total_donated_usd SET DEFAULT 0.00;
 
 -- 5. SCORES TABLE
 -- Enforces: 1-45 Stableford score validation and unique date per user
@@ -72,7 +77,6 @@ CREATE TABLE IF NOT EXISTS public.scores (
     notes TEXT,
     verified BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    -- Enforce unique score date per golfer
     CONSTRAINT unique_user_score_date UNIQUE (user_id, score_date)
 );
 
@@ -82,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_scores_user_date ON public.scores(user_id, score_
 CREATE TABLE IF NOT EXISTS public.draws (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     title TEXT NOT NULL,
-    season_month TEXT NOT NULL, -- e.g. "November 2026"
+    season_month TEXT NOT NULL,
     draw_date TIMESTAMPTZ NOT NULL,
     status draw_status_type DEFAULT 'scheduled',
     prize_tier_label TEXT NOT NULL,
@@ -132,59 +136,102 @@ ALTER TABLE public.draws ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.draw_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.winners ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies if re-running
-DROP POLICY IF EXISTS "Public read active charities" ON public.charities;
-DROP POLICY IF EXISTS "Admins full access to charities" ON public.charities;
-DROP POLICY IF EXISTS "Users can read own profile and admins can read all" ON public.profiles;
-DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
-DROP POLICY IF EXISTS "Users can read own scores" ON public.scores;
-DROP POLICY IF EXISTS "Users can insert own scores" ON public.scores;
-DROP POLICY IF EXISTS "Users can update own scores" ON public.scores;
-DROP POLICY IF EXISTS "Users can delete own scores" ON public.scores;
-DROP POLICY IF EXISTS "All authenticated users can view draws" ON public.draws;
-DROP POLICY IF EXISTS "Admins manage draws" ON public.draws;
-DROP POLICY IF EXISTS "Winners can view own winning records" ON public.winners;
-DROP POLICY IF EXISTS "Winners can submit proof for their winning record" ON public.winners;
-DROP POLICY IF EXISTS "Admins full access to winners" ON public.winners;
-
--- Charities policies
-CREATE POLICY "Public read active charities"
-    ON public.charities FOR SELECT
-    USING (active = TRUE);
-
-CREATE POLICY "Admins full access to charities"
-    ON public.charities FOR ALL
-    USING (
-        EXISTS (
-            SELECT 1 FROM public.profiles
-            WHERE profiles.id = auth.uid() AND profiles.role = 'admin'
-        )
+-- ------------------------------------------------------------------------------
+-- A. RECURSION-SAFE ADMIN CHECK FUNCTION
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.profiles
+        WHERE id = auth.uid() AND role = 'admin'
     );
+$$;
 
--- Profiles policies
+-- Restrict function execution permissions
+REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated, anon;
+
+-- ------------------------------------------------------------------------------
+-- B. ROLE & MEMBERSHIP PRIVILEGE SAFEGUARD TRIGGER
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.protect_profile_role()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    -- Prevent non-admins from escalating their role or setting active membership
+    IF NOT public.is_admin() THEN
+        IF NEW.role IS DISTINCT FROM OLD.role THEN
+            RAISE EXCEPTION 'Unauthorized: regular members cannot alter account roles';
+        END IF;
+        IF NEW.membership_active IS DISTINCT FROM OLD.membership_active THEN
+            RAISE EXCEPTION 'Unauthorized: membership status can only be modified via verified billing webhooks or administrators';
+        END IF;
+    END IF;
+    NEW.updated_at := NOW();
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS tr_protect_profile_role ON public.profiles;
+CREATE TRIGGER tr_protect_profile_role
+    BEFORE UPDATE ON public.profiles
+    FOR EACH ROW EXECUTE FUNCTION public.protect_profile_role();
+
+-- ------------------------------------------------------------------------------
+-- C. PROFILES POLICIES
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.profiles;
+CREATE POLICY "Users can insert own profile"
+    ON public.profiles FOR INSERT
+    WITH CHECK (auth.uid() = id);
+
+DROP POLICY IF EXISTS "Users can read own profile and admins can read all" ON public.profiles;
 CREATE POLICY "Users can read own profile and admins can read all"
     ON public.profiles FOR SELECT
     USING (
-        auth.uid() = id OR 
-        EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+        auth.uid() = id OR public.is_admin()
     );
 
+DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
 CREATE POLICY "Users can update own profile"
     ON public.profiles FOR UPDATE
     USING (auth.uid() = id)
     WITH CHECK (
         auth.uid() = id AND (
-            -- Prevent self-escalation of user role
-            role = (SELECT p.role FROM public.profiles p WHERE p.id = auth.uid()) OR
-            EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'admin')
+            role = 'member' OR public.is_admin()
         )
     );
 
--- Scores policies
+-- ------------------------------------------------------------------------------
+-- D. CHARITIES POLICIES
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Public read active charities" ON public.charities;
+CREATE POLICY "Public read active charities"
+    ON public.charities FOR SELECT
+    USING (active = TRUE OR public.is_admin());
+
+DROP POLICY IF EXISTS "Admins full access to charities" ON public.charities;
+CREATE POLICY "Admins full access to charities"
+    ON public.charities FOR ALL
+    USING (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- E. SCORES POLICIES
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Users can read own scores" ON public.scores;
 CREATE POLICY "Users can read own scores"
     ON public.scores FOR SELECT
-    USING (auth.uid() = user_id);
+    USING (auth.uid() = user_id OR public.is_admin());
 
+DROP POLICY IF EXISTS "Users can insert own scores" ON public.scores;
 CREATE POLICY "Users can insert own scores"
     ON public.scores FOR INSERT
     WITH CHECK (
@@ -193,6 +240,7 @@ CREATE POLICY "Users can insert own scores"
         stableford_points <= 45
     );
 
+DROP POLICY IF EXISTS "Users can update own scores" ON public.scores;
 CREATE POLICY "Users can update own scores"
     ON public.scores FOR UPDATE
     USING (auth.uid() = user_id)
@@ -202,49 +250,154 @@ CREATE POLICY "Users can update own scores"
         stableford_points <= 45
     );
 
+DROP POLICY IF EXISTS "Users can delete own scores" ON public.scores;
 CREATE POLICY "Users can delete own scores"
     ON public.scores FOR DELETE
-    USING (auth.uid() = user_id);
+    USING (auth.uid() = user_id OR public.is_admin());
 
--- Draws policies
+-- ------------------------------------------------------------------------------
+-- F. DRAWS & DRAW ENTRIES POLICIES
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "All authenticated users can view draws" ON public.draws;
 CREATE POLICY "All authenticated users can view draws"
     ON public.draws FOR SELECT
     TO authenticated
     USING (TRUE);
 
+DROP POLICY IF EXISTS "Admins manage draws" ON public.draws;
 CREATE POLICY "Admins manage draws"
     ON public.draws FOR ALL
-    USING (
-        EXISTS (
-            SELECT 1 FROM public.profiles
-            WHERE profiles.id = auth.uid() AND profiles.role = 'admin'
-        )
-    );
+    USING (public.is_admin());
 
--- Winners policies
+DROP POLICY IF EXISTS "Users can view own draw entries" ON public.draw_entries;
+CREATE POLICY "Users can view own draw entries"
+    ON public.draw_entries FOR SELECT
+    USING (auth.uid() = user_id OR public.is_admin());
+
+DROP POLICY IF EXISTS "Users can insert own draw entries" ON public.draw_entries;
+CREATE POLICY "Users can insert own draw entries"
+    ON public.draw_entries FOR INSERT
+    WITH CHECK (auth.uid() = user_id OR public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- G. WINNERS POLICIES
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Winners can view own winning records" ON public.winners;
 CREATE POLICY "Winners can view own winning records"
     ON public.winners FOR SELECT
-    USING (
-        auth.uid() = user_id OR 
-        EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
-    );
+    USING (auth.uid() = user_id OR public.is_admin());
 
+DROP POLICY IF EXISTS "Winners can submit proof for their winning record" ON public.winners;
 CREATE POLICY "Winners can submit proof for their winning record"
     ON public.winners FOR UPDATE
     USING (auth.uid() = user_id)
-    WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "Admins full access to winners"
-    ON public.winners FOR ALL
-    USING (
-        EXISTS (
-            SELECT 1 FROM public.profiles
-            WHERE profiles.id = auth.uid() AND profiles.role = 'admin'
+    WITH CHECK (
+        auth.uid() = user_id AND (
+            -- Non-admins cannot alter verification_status or payout_status
+            (verification_status = 'pending' AND payout_status = 'pending') OR
+            public.is_admin()
         )
     );
 
+DROP POLICY IF EXISTS "Admins full access to winners" ON public.winners;
+CREATE POLICY "Admins full access to winners"
+    ON public.winners FOR ALL
+    USING (public.is_admin());
+
+-- ------------------------------------------------------------------------------
+-- H. AUTOMATIC USER REGISTRATION TRIGGER (Safe & Resilient)
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_charity_id UUID := NULL;
+    v_raw_charity TEXT;
+    v_handicap NUMERIC(3, 1) := 14.2;
+    v_raw_handicap TEXT;
+    v_full_name TEXT;
+    v_home_club TEXT;
+BEGIN
+    -- 1. Safely resolve charity foreign key
+    v_raw_charity := new.raw_user_meta_data->>'selected_charity_id';
+    IF v_raw_charity IS NOT NULL AND v_raw_charity ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+        SELECT id INTO v_charity_id
+        FROM public.charities
+        WHERE id = v_raw_charity::UUID AND active = TRUE;
+    END IF;
+
+    -- If candidate charity was not found, default to the first active charity (if any exist), else NULL
+    IF v_charity_id IS NULL THEN
+        SELECT id INTO v_charity_id
+        FROM public.charities
+        WHERE active = TRUE
+        ORDER BY created_at ASC
+        LIMIT 1;
+    END IF;
+
+    -- 2. Safely parse and sanitize handicap index (-10.0 to 54.0)
+    v_raw_handicap := new.raw_user_meta_data->>'handicap_index';
+    IF v_raw_handicap IS NOT NULL AND v_raw_handicap ~ '^-?[0-9]+(\.[0-9]+)?$' THEN
+        v_handicap := GREATEST(-10.0, LEAST(54.0, ROUND(v_raw_handicap::NUMERIC, 1)));
+    END IF;
+
+    -- 3. Sanitize full name
+    v_full_name := COALESCE(
+        NULLIF(TRIM(new.raw_user_meta_data->>'full_name'), ''),
+        NULLIF(TRIM(split_part(new.email, '@', 1)), ''),
+        'Hero Golfer'
+    );
+
+    -- 4. Sanitize home club
+    v_home_club := COALESCE(
+        NULLIF(TRIM(new.raw_user_meta_data->>'home_club'), ''),
+        'Pinehurst No. 2 Links'
+    );
+
+    -- 5. Insert profile with strict security defaults:
+    --    - role is strictly forced to 'member' (never trust metadata role)
+    --    - membership_active is FALSE (requires verified subscription)
+    --    - total_donated_usd is 0.00
+    INSERT INTO public.profiles (
+        id, 
+        email, 
+        full_name, 
+        handicap_index, 
+        home_club, 
+        role, 
+        membership_tier, 
+        membership_active,
+        selected_charity_id,
+        total_donated_usd
+    )
+    VALUES (
+        new.id,
+        new.email,
+        v_full_name,
+        v_handicap,
+        v_home_club,
+        'member',
+        'monthly',
+        FALSE,
+        v_charity_id,
+        0.00
+    )
+    ON CONFLICT (id) DO NOTHING;
+
+    RETURN new;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
 -- ==============================================================================
--- SAMPLE SEED DATA
+-- SAMPLE SEED DATA (Idempotent)
 -- ==============================================================================
 
 INSERT INTO public.charities (id, name, slug, tagline, description, category, total_raised_usd, impact_metric, active)
