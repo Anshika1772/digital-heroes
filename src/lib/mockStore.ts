@@ -308,9 +308,9 @@ export class MockStore {
   }
 
   // --- Stableford Scores Logic with Strict Rules ---
-  // 1. Stableford range: 1 to 45
-  // 2. Unique score date per user
-  // 3. Retain / view latest 5 scores in reverse chronological order
+  // 1. Stableford range: integer strictly 1 to 45
+  // 2. Unique score date per user, non-future date
+  // 3. Consistently retain and display only the latest 5 scores in reverse chronological order
   static getScoresForUser(userId: string): StablefordScore[] {
     const all = this.getScores();
     return all
@@ -323,7 +323,14 @@ export class MockStore {
   }
 
   static addScore(newScore: Omit<StablefordScore, 'id' | 'createdAt' | 'verified'>): { success: boolean; error?: string; score?: StablefordScore } {
-    // Rule 1: Validate points between 1 and 45
+    // Rule 1: Validate points strictly as integer between 1 and 45
+    if (typeof newScore.stablefordPoints !== 'number' || !Number.isInteger(newScore.stablefordPoints)) {
+      return {
+        success: false,
+        error: 'Stableford points must be a whole integer.'
+      };
+    }
+
     if (newScore.stablefordPoints < 1 || newScore.stablefordPoints > 45) {
       return { 
         success: false, 
@@ -331,35 +338,75 @@ export class MockStore {
       };
     }
 
+    // Rule 2: Validate date
+    if (!newScore.scoreDate || isNaN(new Date(newScore.scoreDate).getTime())) {
+      return { success: false, error: 'A valid round date is required.' };
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (newScore.scoreDate > todayStr) {
+      return { success: false, error: 'Round date cannot be in the future.' };
+    }
+
+    // Rule 3: Validate course name
+    const cleanCourse = (newScore.courseName || '').trim();
+    if (cleanCourse.length < 2 || cleanCourse.length > 100) {
+      return { success: false, error: 'Course name must be between 2 and 100 characters.' };
+    }
+
     const all = this.getScores();
-    // Rule 2: Enforce unique score date per user
+    // Rule 4: Enforce unique score date per user
     const dateConflict = all.find(s => s.userId === newScore.userId && s.scoreDate === newScore.scoreDate);
     if (dateConflict) {
       return { 
         success: false, 
-        error: `A round has already been submitted for date ${newScore.scoreDate} (${dateConflict.courseName} - ${dateConflict.stablefordPoints} pts). Each date can only have one official score.` 
+        error: `A round on ${newScore.scoreDate} is already recorded (${dateConflict.courseName} - ${dateConflict.stablefordPoints} pts). Each date can only have one official score.` 
       };
     }
 
     const score: StablefordScore = {
       ...newScore,
+      courseName: cleanCourse,
+      notes: newScore.notes ? newScore.notes.trim().slice(0, 500) : undefined,
       id: 'score-' + Date.now(),
       verified: true,
       createdAt: new Date().toISOString()
     };
 
-    all.unshift(score);
-    saveToStorage('scores', all);
+    // Separate other users' scores, roll off scores older than latest 5 for current user
+    const otherUsersScores = all.filter(s => s.userId !== newScore.userId);
+    const userScores = [score, ...all.filter(s => s.userId === newScore.userId)]
+      .sort((a, b) => new Date(b.scoreDate).getTime() - new Date(a.scoreDate).getTime())
+      .slice(0, 5); // Strictly retain latest five scores per user
+
+    const newAll = [...userScores, ...otherUsersScores];
+    saveToStorage('scores', newAll);
     return { success: true, score };
   }
 
   static updateScore(updated: StablefordScore): { success: boolean; error?: string; score?: StablefordScore } {
     // Validate points
+    if (typeof updated.stablefordPoints !== 'number' || !Number.isInteger(updated.stablefordPoints)) {
+      return { success: false, error: 'Stableford points must be a whole integer.' };
+    }
+
     if (updated.stablefordPoints < 1 || updated.stablefordPoints > 45) {
       return { 
         success: false, 
         error: `Stableford score must be between 1 and 45 points.` 
       };
+    }
+
+    if (!updated.scoreDate || isNaN(new Date(updated.scoreDate).getTime())) {
+      return { success: false, error: 'A valid round date is required.' };
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (updated.scoreDate > todayStr) {
+      return { success: false, error: 'Round date cannot be in the future.' };
+    }
+
+    const cleanCourse = (updated.courseName || '').trim();
+    if (cleanCourse.length < 2 || cleanCourse.length > 100) {
+      return { success: false, error: 'Course name must be between 2 and 100 characters.' };
     }
 
     const all = this.getScores();
@@ -372,9 +419,20 @@ export class MockStore {
       };
     }
 
-    const newAll = all.map(s => s.id === updated.id ? updated : s);
-    saveToStorage('scores', newAll);
-    return { success: true, score: updated };
+    const cleanUpdated: StablefordScore = {
+      ...updated,
+      courseName: cleanCourse,
+      notes: updated.notes ? updated.notes.trim().slice(0, 500) : undefined,
+    };
+
+    const otherUsersScores = all.filter(s => s.userId !== updated.userId);
+    const userScores = all.filter(s => s.userId === updated.userId)
+      .map(s => s.id === updated.id ? cleanUpdated : s)
+      .sort((a, b) => new Date(b.scoreDate).getTime() - new Date(a.scoreDate).getTime())
+      .slice(0, 5);
+
+    saveToStorage('scores', [...userScores, ...otherUsersScores]);
+    return { success: true, score: cleanUpdated };
   }
 
   static deleteScore(scoreId: string): void {
@@ -382,65 +440,132 @@ export class MockStore {
     saveToStorage('scores', all);
   }
 
-  // --- Charities Logic ---
+  // --- Charities Logic with Validation ---
   static updateCharity(updated: Charity): void {
     const charities = this.getCharities().map(c => c.id === updated.id ? updated : c);
     saveToStorage('charities', charities);
   }
 
-  static addCharity(charity: Omit<Charity, 'id'>): Charity {
+  static addCharity(charity: Omit<Charity, 'id'>): { success: boolean; error?: string; charity?: Charity } {
+    if (!charity.name || charity.name.trim().length < 2) {
+      return { success: false, error: 'Foundation name must be at least 2 characters.' };
+    }
+    if (!charity.website || !charity.website.startsWith('http')) {
+      return { success: false, error: 'A valid foundation website URL is required.' };
+    }
+    if (!charity.tagline || charity.tagline.trim().length < 5) {
+      return { success: false, error: 'Mission tagline must be at least 5 characters.' };
+    }
+
     const newCharity: Charity = {
       ...charity,
+      name: charity.name.trim(),
+      tagline: charity.tagline.trim(),
+      description: (charity.description || '').trim(),
+      impactMetric: (charity.impactMetric || '').trim(),
+      website: charity.website.trim(),
       id: 'charity-' + Date.now()
     };
     const charities = [newCharity, ...this.getCharities()];
     saveToStorage('charities', charities);
-    return newCharity;
+    return { success: true, charity: newCharity };
+  }
+
+  // Direct booster donation to charity
+  static addDirectDonation(userId: string, charityId: string, amount: number): { success: boolean; error?: string } {
+    if (typeof amount !== 'number' || isNaN(amount) || amount < 5 || amount > 5000) {
+      return { success: false, error: 'Donation must be a valid amount between $5.00 and $5,000.00.' };
+    }
+
+    const charities = this.getCharities();
+    const targetCharity = charities.find(c => c.id === charityId);
+    if (!targetCharity) return { success: false, error: 'Charity not found.' };
+
+    targetCharity.totalRaised += amount;
+    saveToStorage('charities', charities);
+
+    const profiles = this.getProfiles();
+    const user = profiles.find(p => p.id === userId);
+    if (user) {
+      user.totalDonated += amount;
+      saveToStorage('profiles', profiles);
+    }
+
+    return { success: true };
   }
 
   // --- Winner Proof & Verification Logic ---
   static submitWinnerProof(winnerId: string, proofUrl: string, proofDescription: string): { success: boolean; error?: string } {
+    if (!proofUrl || !proofUrl.trim()) {
+      return { success: false, error: 'Proof document link or file is required.' };
+    }
+    if (!proofDescription || proofDescription.trim().length < 10) {
+      return { success: false, error: 'Attestation statement must be at least 10 characters.' };
+    }
+
     const winners = this.getWinners();
     const target = winners.find(w => w.id === winnerId);
-    if (!target) return { success: false, error: 'Winner record not found' };
+    if (!target) return { success: false, error: 'Winner record not found.' };
 
-    target.proofUrl = proofUrl;
-    target.proofDescription = proofDescription;
+    target.proofUrl = proofUrl.trim();
+    target.proofDescription = proofDescription.trim();
     target.proofSubmittedAt = new Date().toISOString();
     target.verificationStatus = 'pending';
     saveToStorage('winners', winners);
     return { success: true };
   }
 
-  static verifyWinnerProof(winnerId: string, status: 'verified' | 'rejected', notes?: string): void {
+  static verifyWinnerProof(adminUserId: string, winnerId: string, status: 'verified' | 'rejected', notes?: string): { success: boolean; error?: string } {
+    const admin = this.getProfiles().find(p => p.id === adminUserId);
+    if (admin?.role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only platform administrators can verify scorecard proofs.' };
+    }
+
     const winners = this.getWinners();
     const target = winners.find(w => w.id === winnerId);
     if (target) {
       target.verificationStatus = status;
-      if (notes) target.verificationNotes = notes;
+      if (notes) target.verificationNotes = notes.trim();
       if (status === 'verified' && target.payoutStatus === 'pending') {
         target.payoutStatus = 'processing';
       }
       saveToStorage('winners', winners);
+      return { success: true };
     }
+    return { success: false, error: 'Winner record not found.' };
   }
 
-  static updatePayoutStatus(winnerId: string, status: 'pending' | 'processing' | 'paid', reference?: string): void {
+  static updatePayoutStatus(adminUserId: string, winnerId: string, status: 'pending' | 'processing' | 'paid', reference?: string): { success: boolean; error?: string } {
+    const admin = this.getProfiles().find(p => p.id === adminUserId);
+    if (admin?.role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only platform administrators can authorize prize payouts.' };
+    }
+
     const winners = this.getWinners();
     const target = winners.find(w => w.id === winnerId);
-    if (target) {
-      target.payoutStatus = status;
-      if (reference) target.payoutReference = reference;
-      if (status === 'paid') target.payoutDate = new Date().toISOString();
-      saveToStorage('winners', winners);
+    if (!target) return { success: false, error: 'Winner record not found.' };
+
+    if (status === 'paid' && target.verificationStatus !== 'verified') {
+      return { success: false, error: 'Cannot mark as paid until winner proof has been verified.' };
     }
+
+    target.payoutStatus = status;
+    if (reference) target.payoutReference = reference.trim();
+    if (status === 'paid') target.payoutDate = new Date().toISOString();
+    saveToStorage('winners', winners);
+    return { success: true };
   }
 
   // --- Draw Simulation Execution ---
-  static executeDrawSimulation(drawId: string): { success: boolean; winner?: WinnerRecord; error?: string } {
+  static executeDrawSimulation(adminUserId: string, drawId: string): { success: boolean; winner?: WinnerRecord; error?: string } {
+    const admin = this.getProfiles().find(p => p.id === adminUserId);
+    if (admin?.role !== 'admin') {
+      return { success: false, error: 'Unauthorized: Only platform administrators can execute drawings.' };
+    }
+
     const draws = this.getDraws();
     const targetDraw = draws.find(d => d.id === drawId);
-    if (!targetDraw) return { success: false, error: 'Draw not found' };
+    if (!targetDraw) return { success: false, error: 'Draw not found.' };
 
     const profiles = this.getProfiles().filter(p => p.role === 'member');
     if (profiles.length === 0) return { success: false, error: 'No eligible members found in entry pool.' };

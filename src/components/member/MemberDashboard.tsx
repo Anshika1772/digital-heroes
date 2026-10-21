@@ -25,6 +25,7 @@ interface MemberDashboardProps {
   onDeleteScore: (scoreId: string) => void;
   onSelectCharity: (charityId: string) => void;
   onSubmitWinnerProof: (winnerId: string, proofUrl: string, description: string) => void;
+  onAddDirectDonation?: (amount: number, charityId: string) => { success: boolean; error?: string };
 }
 
 export const MemberDashboard: React.FC<MemberDashboardProps> = ({
@@ -38,6 +39,7 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
   onDeleteScore,
   onSelectCharity,
   onSubmitWinnerProof,
+  onAddDirectDonation,
 }) => {
   const [isScoreModalOpen, setIsScoreModalOpen] = useState(false);
   const [editingScore, setEditingScore] = useState<StablefordScore | null>(null);
@@ -181,6 +183,7 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
               selectedCharityId={currentUser.selectedCharityId}
               totalDonated={currentUser.totalDonated}
               onSelectCharity={onSelectCharity}
+              onAddDirectDonation={onAddDirectDonation}
             />
           </div>
 

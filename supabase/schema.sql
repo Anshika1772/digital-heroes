@@ -171,7 +171,14 @@ CREATE POLICY "Users can read own profile and admins can read all"
 
 CREATE POLICY "Users can update own profile"
     ON public.profiles FOR UPDATE
-    USING (auth.uid() = id);
+    USING (auth.uid() = id)
+    WITH CHECK (
+        auth.uid() = id AND (
+            -- Prevent self-escalation of user role
+            role = (SELECT p.role FROM public.profiles p WHERE p.id = auth.uid()) OR
+            EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'admin')
+        )
+    );
 
 -- Scores policies
 CREATE POLICY "Users can read own scores"

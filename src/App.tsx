@@ -237,9 +237,22 @@ export function App() {
     }
   };
 
+  // Handle Direct Donation Booster
+  const handleAddDirectDonation = (amount: number, charityId: string) => {
+    if (!currentUser) return { success: false, error: 'Sign in required.' };
+    const res = MockStore.addDirectDonation(currentUser.id, charityId, amount);
+    if (res.success) {
+      refreshAllState();
+      addToast('success', `Direct contribution of $${amount.toFixed(2)} recorded to charity escrow!`, 'Donation Received');
+    } else {
+      addToast('error', res.error || 'Failed to process donation.');
+    }
+    return res;
+  };
+
   // Handle Draw Simulation
   const handleExecuteDraw = (drawId: string) => {
-    const res = MockStore.executeDrawSimulation(drawId);
+    const res = MockStore.executeDrawSimulation(currentUser?.id || '', drawId);
     if (res.success && res.winner) {
       refreshAllState();
       addToast('success', `Winner selected: ${res.winner.userName} for ${res.winner.prizeTitle}!`, 'Draw Completed');
@@ -251,27 +264,39 @@ export function App() {
 
   // Handle Winner Verification (Admin)
   const handleVerifyWinner = (winnerId: string, status: 'verified' | 'rejected', notes?: string) => {
-    MockStore.verifyWinnerProof(winnerId, status, notes);
-    refreshAllState();
-    addToast(
-      status === 'verified' ? 'success' : 'error',
-      `Winner claim marked as ${status.toUpperCase()}.`,
-      'Verification Audit Logged'
-    );
+    const res = MockStore.verifyWinnerProof(currentUser?.id || '', winnerId, status, notes);
+    if (res.success) {
+      refreshAllState();
+      addToast(
+        status === 'verified' ? 'success' : 'error',
+        `Winner claim marked as ${status.toUpperCase()}.`,
+        'Verification Audit Logged'
+      );
+    } else {
+      addToast('error', res.error || 'Verification action failed.');
+    }
   };
 
   // Handle Payout Status Update (Admin)
   const handleUpdatePayout = (winnerId: string, status: 'pending' | 'processing' | 'paid', ref?: string) => {
-    MockStore.updatePayoutStatus(winnerId, status, ref);
-    refreshAllState();
-    addToast('success', `Payout updated to ${status.toUpperCase()} (${ref || 'N/A'}).`, 'Disbursement Updated');
+    const res = MockStore.updatePayoutStatus(currentUser?.id || '', winnerId, status, ref);
+    if (res.success) {
+      refreshAllState();
+      addToast('success', `Payout updated to ${status.toUpperCase()} (${ref || 'N/A'}).`, 'Disbursement Updated');
+    } else {
+      addToast('error', res.error || 'Failed to update payout status.');
+    }
   };
 
   // Handle Add Charity (Admin)
   const handleAddCharity = (charityData: Omit<Charity, 'id'>) => {
-    MockStore.addCharity(charityData);
-    refreshAllState();
-    addToast('success', `Added new foundation: ${charityData.name}`, 'Cause Onboarded');
+    const res = MockStore.addCharity(charityData);
+    if (res.success && res.charity) {
+      refreshAllState();
+      addToast('success', `Added new foundation: ${res.charity.name}`, 'Cause Onboarded');
+    } else {
+      addToast('error', res.error || 'Failed to onboard charity.');
+    }
   };
 
   // Handle Update Charity (Admin)
@@ -409,6 +434,7 @@ export function App() {
               onDeleteScore={handleDeleteScore}
               onSelectCharity={handleSelectCharity}
               onSubmitWinnerProof={handleSubmitWinnerProof}
+              onAddDirectDonation={handleAddDirectDonation}
             />
           </div>
         )}

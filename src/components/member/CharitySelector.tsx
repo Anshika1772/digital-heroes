@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Charity } from '../../types';
 import { Badge } from '../common/Badge';
-import { HeartHandshake, CheckCircle2, ChevronRight, Globe, Award } from 'lucide-react';
+import { Button } from '../common/Button';
+import { Modal } from '../common/Modal';
+import { HeartHandshake, CheckCircle2, Globe, Award, DollarSign, AlertCircle, Plus, Info } from 'lucide-react';
 
 interface CharitySelectorProps {
   charities: Charity[];
   selectedCharityId: string;
   totalDonated: number;
   onSelectCharity: (charityId: string) => void;
+  onAddDirectDonation?: (amount: number, charityId: string) => { success: boolean; error?: string };
 }
 
 export const CharitySelector: React.FC<CharitySelectorProps> = ({
@@ -15,10 +18,72 @@ export const CharitySelector: React.FC<CharitySelectorProps> = ({
   selectedCharityId,
   totalDonated,
   onSelectCharity,
+  onAddDirectDonation,
 }) => {
   const [isChanging, setIsChanging] = useState(false);
+  const [isDonateModalOpen, setIsDonateModalOpen] = useState(false);
+  const [donationAmount, setDonationAmount] = useState('25.00');
+  const [donationError, setDonationError] = useState<string | null>(null);
+  const [isSubmittingDonation, setIsSubmittingDonation] = useState(false);
+
+  const amountInputRef = useRef<HTMLInputElement>(null);
 
   const current = charities.find(c => c.id === selectedCharityId) || charities[0];
+
+  const handleSelect = (charityId: string) => {
+    const found = charities.find(c => c.id === charityId);
+    if (!found) return;
+    if (!found.active) {
+      alert('This foundation is currently inactive and cannot receive new allocations.');
+      return;
+    }
+    onSelectCharity(charityId);
+    setIsChanging(false);
+  };
+
+  const handleDonationSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setDonationError(null);
+
+    const raw = Number(donationAmount);
+    if (isNaN(raw)) {
+      setDonationError('Please enter a valid numeric dollar amount.');
+      if (amountInputRef.current) amountInputRef.current.focus();
+      return;
+    }
+
+    if (raw < 5) {
+      setDonationError('Minimum supplementary donation is $5.00.');
+      if (amountInputRef.current) amountInputRef.current.focus();
+      return;
+    }
+
+    if (raw > 5000) {
+      setDonationError('Maximum single supplementary donation is $5,000.00.');
+      if (amountInputRef.current) amountInputRef.current.focus();
+      return;
+    }
+
+    // Verify cents
+    const formatted = raw.toFixed(2);
+    if (Math.abs(Number(formatted) - raw) > 0.001) {
+      setDonationError('Amount cannot have more than two decimal places.');
+      return;
+    }
+
+    if (onAddDirectDonation) {
+      setIsSubmittingDonation(true);
+      const res = onAddDirectDonation(raw, current.id);
+      setIsSubmittingDonation(false);
+      if (!res.success) {
+        setDonationError(res.error || 'Failed to process gift.');
+        return;
+      }
+    }
+
+    setIsDonateModalOpen(false);
+    setDonationAmount('25.00');
+  };
 
   return (
     <div className="bg-cream-50 rounded-2xl p-6 sm:p-8 border border-stone-200 shadow-refined space-y-6">
@@ -75,7 +140,7 @@ export const CharitySelector: React.FC<CharitySelectorProps> = ({
           <span>{current?.impactMetric}</span>
         </div>
 
-        <div className="mt-4 pt-3 border-t border-stone-200/80 flex items-center justify-between">
+        <div className="mt-4 pt-3 border-t border-stone-200/80 flex flex-wrap items-center justify-between gap-2">
           <a
             href={current?.website}
             target="_blank"
@@ -86,13 +151,26 @@ export const CharitySelector: React.FC<CharitySelectorProps> = ({
             Official Organization Site
           </a>
 
-          <button
-            type="button"
-            onClick={() => setIsChanging(!isChanging)}
-            className="text-xs font-bold text-forest-900 hover:text-forest-700 underline underline-offset-4"
-          >
-            {isChanging ? 'Collapse Switcher' : 'Switch Supported Charity'}
-          </button>
+          <div className="flex items-center gap-3">
+            {onAddDirectDonation && (
+              <button
+                type="button"
+                onClick={() => setIsDonateModalOpen(true)}
+                className="text-xs font-bold text-emerald-800 hover:text-emerald-950 inline-flex items-center gap-1"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Make Booster Gift
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setIsChanging(!isChanging)}
+              className="text-xs font-bold text-forest-900 hover:text-forest-700 underline underline-offset-4"
+            >
+              {isChanging ? 'Collapse Switcher' : 'Switch Supported Charity'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -103,17 +181,23 @@ export const CharitySelector: React.FC<CharitySelectorProps> = ({
             Select another verified foundation:
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label="Supported charities">
             {charities.map((charity) => {
               const isSelected = charity.id === selectedCharityId;
               return (
                 <div
                   key={charity.id}
-                  onClick={() => {
-                    onSelectCharity(charity.id);
-                    setIsChanging(false);
+                  role="radio"
+                  aria-checked={isSelected}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleSelect(charity.id);
+                    }
                   }}
-                  className={`p-4 rounded-xl border text-left cursor-pointer transition-all ${
+                  onClick={() => handleSelect(charity.id)}
+                  className={`p-4 rounded-xl border text-left cursor-pointer transition-all focus:outline-none focus:ring-2 focus:ring-forest-600 ${
                     isSelected
                       ? 'bg-forest-900 text-cream-50 border-forest-900 shadow-sm'
                       : 'bg-cream-50 text-ink-900 border-stone-200 hover:border-forest-700'
@@ -135,6 +219,110 @@ export const CharitySelector: React.FC<CharitySelectorProps> = ({
           </div>
         </div>
       )}
+
+      {/* Supplementary Direct Donation Modal with full validation */}
+      <Modal
+        isOpen={isDonateModalOpen}
+        onClose={() => setIsDonateModalOpen(false)}
+        title={`Supplementary Gift to ${current?.name}`}
+        subtitle="100% of voluntary booster gifts go directly into vetted charity escrow."
+        maxWidth="md"
+      >
+        <form onSubmit={handleDonationSubmit} noValidate className="space-y-4">
+          <div className="p-3 bg-cream-100 rounded-xl border border-stone-200 text-xs text-ink-700 space-y-1">
+            <span className="text-[10px] uppercase font-bold text-ink-500 font-mono block">Recipient</span>
+            <p className="font-serif font-bold text-forest-950 text-base">{current?.name}</p>
+            <p className="text-[11px] text-emerald-800 font-medium">501(c)(3) Vetted Mission</p>
+          </div>
+
+          <div>
+            <label htmlFor="donation-amount-input" className="block text-xs font-semibold text-ink-700 mb-1">
+              Contribution Amount (USD) <span className="text-rose-600">*</span>
+            </label>
+            <div className="relative">
+              <DollarSign className="absolute left-3 top-2.5 h-4 w-4 text-ink-400" />
+              <input
+                id="donation-amount-input"
+                ref={amountInputRef}
+                type="number"
+                step="0.01"
+                min="5"
+                max="5000"
+                required
+                value={donationAmount}
+                onChange={(e) => {
+                  setDonationAmount(e.target.value);
+                  if (donationError) setDonationError(null);
+                }}
+                aria-invalid={Boolean(donationError)}
+                aria-describedby={donationError ? "donation-error-text" : undefined}
+                className={`w-full pl-9 pr-3 py-2 text-sm bg-cream-50 border rounded-lg focus:outline-none focus:ring-2 ${
+                  donationError
+                    ? 'border-rose-400 focus:ring-rose-500 bg-rose-50/30'
+                    : 'border-stone-300 focus:ring-forest-700'
+                }`}
+              />
+            </div>
+            {donationError && (
+              <p id="donation-error-text" role="alert" className="text-[11px] text-rose-600 mt-1 font-medium">
+                {donationError}
+              </p>
+            )}
+            <p className="text-[11px] text-ink-500 mt-1">
+              Minimum $5.00 • Maximum $5,000.00
+            </p>
+          </div>
+
+          {/* Quick preset chips */}
+          <div className="flex items-center gap-2">
+            {['10.00', '25.00', '50.00', '100.00'].map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => {
+                  setDonationAmount(preset);
+                  if (donationError) setDonationError(null);
+                }}
+                className={`flex-1 py-1 text-xs rounded-lg border font-mono font-bold transition-all ${
+                  donationAmount === preset
+                    ? 'bg-forest-900 text-cream-50 border-forest-900'
+                    : 'bg-cream-100 text-ink-800 border-stone-300 hover:bg-cream-200'
+                }`}
+              >
+                ${preset}
+              </button>
+            ))}
+          </div>
+
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+            <Info className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+            <span>
+              <strong>[Demo Sandbox Flow]:</strong> This supplementary donation demonstrates validation and ledger accounting. No actual card will be charged.
+            </span>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-stone-200">
+            <Button
+              type="button"
+              variant="ghost"
+              size="md"
+              onClick={() => setIsDonateModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="lime"
+              size="md"
+              isLoading={isSubmittingDonation}
+              disabled={isSubmittingDonation}
+              className="font-bold shadow-sm"
+            >
+              Confirm Booster Gift
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
     </div>
   );

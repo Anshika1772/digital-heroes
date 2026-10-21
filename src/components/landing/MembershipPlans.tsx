@@ -26,6 +26,11 @@ export const MembershipPlans: React.FC<MembershipPlansProps> = ({ onSelectPlan }
             Every dollar is split cleanly between verified charitable escrow and major member prize pools. No hidden operational rake.
           </p>
 
+          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-cream-200/90 border border-stone-300 text-[11px] text-ink-600 font-mono">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            <span>[Demo Sandbox Mode] Direct subscription simulation — no credit card billed.</span>
+          </div>
+
           {/* Billing Switcher Toggle */}
           <div className="pt-4 flex items-center justify-center">
             <div className="bg-cream-200 p-1 rounded-xl flex items-center border border-stone-300/80">

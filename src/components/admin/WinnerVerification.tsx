@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { WinnerRecord, VerificationStatus, PayoutStatus } from '../../types';
 import { Badge } from '../common/Badge';
 import { Button } from '../common/Button';
-import { ShieldCheck, CheckCircle2, XCircle, DollarSign, ExternalLink, Clock, AlertTriangle } from 'lucide-react';
+import { Modal } from '../common/Modal';
+import { ShieldCheck, CheckCircle2, XCircle, DollarSign, ExternalLink, Clock, AlertTriangle, FileText } from 'lucide-react';
 
 interface WinnerVerificationProps {
   winners: WinnerRecord[];
@@ -10,24 +11,55 @@ interface WinnerVerificationProps {
   onUpdatePayout: (winnerId: string, status: 'pending' | 'processing' | 'paid', reference?: string) => void;
 }
 
+const PAYOUT_REF_REGEX = /^[A-Za-z0-9-_]{5,30}$/;
+
 export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
   winners,
   onVerifyWinner,
   onUpdatePayout,
 }) => {
-  const [selectedWinnerId, setSelectedWinnerId] = useState<string | null>(null);
+  const [selectedWinner, setSelectedWinner] = useState<WinnerRecord | null>(null);
+  const [actionType, setActionType] = useState<'verify' | 'reject' | 'payout' | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [payoutRef, setPayoutRef] = useState('');
+  const [refError, setRefError] = useState<string | null>(null);
 
-  const handleVerify = (winner: WinnerRecord, status: 'verified' | 'rejected') => {
-    onVerifyWinner(winner.id, status, adminNotes || (status === 'verified' ? 'Scorecard and handicap index verified.' : 'Insufficient scorecard attestation.'));
-    setAdminNotes('');
+  const openActionModal = (winner: WinnerRecord, type: 'verify' | 'reject' | 'payout') => {
+    setSelectedWinner(winner);
+    setActionType(type);
+    setRefError(null);
+    if (type === 'verify') {
+      setAdminNotes('Scorecard and handicap index verified with GHIN attestation.');
+    } else if (type === 'reject') {
+      setAdminNotes('Scorecard markers not legible or handicap attestation incomplete.');
+    } else if (type === 'payout') {
+      setPayoutRef(`PAY-DH-${Date.now().toString().slice(-6)}`);
+    }
   };
 
-  const handlePayoutChange = (winner: WinnerRecord, newStatus: PayoutStatus) => {
-    const ref = payoutRef || `PAY-DH-${Date.now().toString().slice(-6)}`;
-    onUpdatePayout(winner.id, newStatus, ref);
-    setPayoutRef('');
+  const handleConfirmAction = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedWinner || !actionType) return;
+
+    if (actionType === 'verify') {
+      onVerifyWinner(selectedWinner.id, 'verified', adminNotes.trim());
+    } else if (actionType === 'reject') {
+      onVerifyWinner(selectedWinner.id, 'rejected', adminNotes.trim() || 'Proof document rejected.');
+    } else if (actionType === 'payout') {
+      const cleanRef = payoutRef.trim();
+      if (!cleanRef) {
+        setRefError('Payout reference identifier is required.');
+        return;
+      }
+      if (!PAYOUT_REF_REGEX.test(cleanRef)) {
+        setRefError('Reference must be 5-30 alphanumeric characters, hyphens or underscores.');
+        return;
+      }
+      onUpdatePayout(selectedWinner.id, 'paid', cleanRef);
+    }
+
+    setSelectedWinner(null);
+    setActionType(null);
   };
 
   return (
@@ -119,7 +151,7 @@ export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
                   </p>
                   {winner.payoutReference && (
                     <p className="text-[11px] font-mono text-ink-500">
-                      Reference: {winner.payoutReference}
+                      Reference: <strong className="text-forest-900">{winner.payoutReference}</strong>
                     </p>
                   )}
                   {winner.verificationNotes && (
@@ -173,7 +205,7 @@ export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
                     variant="primary"
                     size="sm"
                     disabled={isVerified}
-                    onClick={() => handleVerify(winner, 'verified')}
+                    onClick={() => openActionModal(winner, 'verify')}
                     leftIcon={<CheckCircle2 className="h-3.5 w-3.5" />}
                   >
                     {isVerified ? 'Proof Approved' : 'Approve & Verify Proof'}
@@ -182,7 +214,7 @@ export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
                     variant="danger"
                     size="sm"
                     disabled={winner.verificationStatus === 'rejected'}
-                    onClick={() => handleVerify(winner, 'rejected')}
+                    onClick={() => openActionModal(winner, 'reject')}
                     leftIcon={<XCircle className="h-3.5 w-3.5" />}
                   >
                     Reject Proof
@@ -198,7 +230,9 @@ export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
                         variant="secondary"
                         size="sm"
                         disabled={!isVerified || winner.payoutStatus === 'processing'}
-                        onClick={() => handlePayoutChange(winner, 'processing')}
+                        onClick={() => {
+                          onUpdatePayout(winner.id, 'processing', winner.payoutReference || `PROC-DH-${Date.now().toString().slice(-6)}`);
+                        }}
                       >
                         Set Processing
                       </Button>
@@ -206,11 +240,11 @@ export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
                         variant="lime"
                         size="sm"
                         disabled={!isVerified}
-                        onClick={() => handlePayoutChange(winner, 'paid')}
+                        onClick={() => openActionModal(winner, 'payout')}
                         leftIcon={<DollarSign className="h-3.5 w-3.5" />}
                         className="font-bold"
                       >
-                        Mark as Paid
+                        Authorize & Mark as Paid
                       </Button>
                     </>
                   ) : (
@@ -225,6 +259,97 @@ export const WinnerVerification: React.FC<WinnerVerificationProps> = ({
           );
         })}
       </div>
+
+      {/* Action Confirmation Modal */}
+      {selectedWinner && actionType && (
+        <Modal
+          isOpen={Boolean(selectedWinner)}
+          onClose={() => {
+            setSelectedWinner(null);
+            setActionType(null);
+          }}
+          title={
+            actionType === 'verify' 
+              ? 'Approve Scorecard Proof' 
+              : actionType === 'reject' 
+              ? 'Reject Scorecard Proof' 
+              : 'Authorize Payout Disbursement'
+          }
+          subtitle={`Claim: ${selectedWinner.prizeTitle} (${selectedWinner.userName})`}
+          maxWidth="md"
+        >
+          <form onSubmit={handleConfirmAction} noValidate className="space-y-4">
+            {actionType !== 'payout' ? (
+              <div>
+                <label htmlFor="admin-audit-notes" className="block text-xs font-semibold text-ink-700 mb-1">
+                  Audit Notes & Attestation Feedback <span className="text-rose-600">*</span>
+                </label>
+                <textarea
+                  id="admin-audit-notes"
+                  required
+                  rows={3}
+                  value={adminNotes}
+                  onChange={(e) => setAdminNotes(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-cream-50 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-forest-700 resize-none"
+                  placeholder="Record verification details, marker attestation GHIN, or rejection rationale..."
+                />
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="payout-ref-input" className="block text-xs font-semibold text-ink-700 mb-1">
+                  Banking / Wire Transfer Reference <span className="text-rose-600">*</span>
+                </label>
+                <input
+                  id="payout-ref-input"
+                  type="text"
+                  required
+                  value={payoutRef}
+                  onChange={(e) => {
+                    setPayoutRef(e.target.value);
+                    if (refError) setRefError(null);
+                  }}
+                  aria-invalid={Boolean(refError)}
+                  aria-describedby={refError ? "payout-ref-error" : undefined}
+                  className={`w-full px-3 py-2 text-sm bg-cream-50 border rounded-lg focus:outline-none focus:ring-2 ${
+                    refError ? 'border-rose-400 focus:ring-rose-500' : 'border-stone-300 focus:ring-forest-700'
+                  }`}
+                  placeholder="e.g. PAY-DH-849201"
+                />
+                {refError && (
+                  <p id="payout-ref-error" role="alert" className="text-[11px] text-rose-600 mt-1 font-medium">
+                    {refError}
+                  </p>
+                )}
+                <p className="text-[11px] text-ink-500 mt-1 font-mono">
+                  Valuation: ${selectedWinner.prizeValueUsd.toLocaleString()} USD
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-stone-200">
+              <Button
+                type="button"
+                variant="ghost"
+                size="md"
+                onClick={() => {
+                  setSelectedWinner(null);
+                  setActionType(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant={actionType === 'reject' ? 'danger' : 'lime'}
+                size="md"
+                className="font-bold"
+              >
+                {actionType === 'verify' ? 'Confirm Approval' : actionType === 'reject' ? 'Confirm Rejection' : 'Execute Disbursement'}
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
     </div>
   );

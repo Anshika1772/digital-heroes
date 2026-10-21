@@ -50,6 +50,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'analytics' | 'users' | 'charities' | 'draws' | 'verifications'>('analytics');
 
+  // Hard authorization boundary check
+  if (currentUser.role !== 'admin') {
+    return (
+      <div className="py-20 bg-cream-100 min-h-screen flex items-center justify-center px-4">
+        <div className="max-w-md w-full bg-cream-50 p-8 rounded-2xl border border-rose-300 shadow-refined text-center space-y-4">
+          <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-800 flex items-center justify-center mx-auto">
+            <ShieldCheck className="h-6 w-6 text-rose-600" />
+          </div>
+          <h2 className="font-serif text-2xl font-bold text-forest-950">Access Restricted</h2>
+          <p className="text-xs text-ink-600 leading-relaxed">
+            Administrative credentials required. Current user ({currentUser.email}) has member tier permissions and cannot access platform governance.
+          </p>
+          <button
+            onClick={onExitAdmin}
+            className="w-full py-2.5 rounded-xl bg-forest-900 text-cream-50 font-bold text-xs uppercase tracking-wider hover:bg-forest-800 transition-colors"
+          >
+            Return to Member Hub
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const pendingVerificationCount = winners.filter(w => w.verificationStatus === 'pending').length;
 
   const tabs = [
