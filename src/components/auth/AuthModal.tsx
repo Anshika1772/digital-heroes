@@ -56,6 +56,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [canResendEmail, setCanResendEmail] = useState(false);
+  const [isResending, setIsResending] = useState(false);
 
   // Input refs for auto-focusing on first invalid field
   const fullNameRef = useRef<HTMLInputElement>(null);
@@ -76,6 +78,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setMode(newMode);
     setErrors({});
     setSuccessMessage(null);
+    setCanResendEmail(false);
+  };
+
+  const handleResendVerification = async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !supabase) return;
+    setIsResending(true);
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: cleanEmail,
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) {
+        setErrors({ general: `Failed to resend verification email: ${error.message}` });
+      } else {
+        setSuccessMessage(`A new verification email has been sent to "${cleanEmail}". Please check your inbox or spam folder.`);
+        setCanResendEmail(false);
+      }
+    } catch (err: any) {
+      setErrors({ general: err.message || 'Error resending verification email.' });
+    } finally {
+      setIsResending(false);
+    }
   };
 
   const validate = (): boolean => {
@@ -170,6 +198,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             } else if (msg.includes('Invalid login credentials')) {
               setErrors({ general: 'Invalid email or password. Please verify and try again.' });
             } else if (msg.includes('Email not confirmed')) {
+              setCanResendEmail(true);
               setErrors({ general: 'Email address not yet confirmed. Please click the verification link sent to your email.' });
             } else if (error.status === 429) {
               setErrors({ general: 'Too many authentication attempts. Please wait 60 seconds and try again.' });
@@ -181,21 +210,51 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           }
 
           if (data.user) {
-            // Find or build profile from Supabase user session
-            const match: GolferProfile = {
-              id: data.user.id,
-              email: data.user.email || cleanEmail,
-              fullName: data.user.user_metadata?.full_name || 'Verified Golfer',
-              avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
-              handicapIndex: data.user.user_metadata?.handicap_index || 12.0,
-              homeClub: data.user.user_metadata?.home_club || 'Pebble Beach Links',
-              role: (data.user.user_metadata?.role as any) || 'member',
-              membershipTier: 'monthly',
-              membershipActive: true,
-              selectedCharityId: 'charity-1',
-              totalDonated: 0,
-              createdAt: data.user.created_at || new Date().toISOString()
-            };
+            // Find or build profile from Supabase user session / database
+            let match: GolferProfile | null = null;
+            try {
+              const { data: dbProfile } = await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', data.user.id)
+                .maybeSingle();
+
+              if (dbProfile) {
+                match = {
+                  id: dbProfile.id,
+                  email: dbProfile.email || data.user.email || cleanEmail,
+                  fullName: dbProfile.full_name || data.user.user_metadata?.full_name || 'Verified Golfer',
+                  avatarUrl: dbProfile.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
+                  handicapIndex: Number(dbProfile.handicap_index) || 12.0,
+                  homeClub: dbProfile.home_club || 'Pebble Beach Links',
+                  role: (dbProfile.role as any) || 'member',
+                  membershipTier: (dbProfile.membership_tier as any) || 'monthly',
+                  membershipActive: dbProfile.membership_active ?? true,
+                  selectedCharityId: dbProfile.selected_charity_id || 'charity-1',
+                  totalDonated: Number(dbProfile.total_donated) || 0,
+                  createdAt: dbProfile.created_at || data.user.created_at || new Date().toISOString()
+                };
+              }
+            } catch (pErr) {
+              console.warn('Could not load profile from DB, falling back to metadata:', pErr);
+            }
+
+            if (!match) {
+              match = {
+                id: data.user.id,
+                email: data.user.email || cleanEmail,
+                fullName: data.user.user_metadata?.full_name || 'Verified Golfer',
+                avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
+                handicapIndex: data.user.user_metadata?.handicap_index || 12.0,
+                homeClub: data.user.user_metadata?.home_club || 'Pebble Beach Links',
+                role: (data.user.user_metadata?.role as any) || 'member',
+                membershipTier: 'monthly',
+                membershipActive: true,
+                selectedCharityId: 'charity-1',
+                totalDonated: 0,
+                createdAt: data.user.created_at || new Date().toISOString()
+              };
+            }
             onLogin(match);
             onClose();
             return;
@@ -219,6 +278,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             email: cleanEmail,
             password: password,
             options: {
+              emailRedirectTo: window.location.origin,
               data: {
                 full_name: fullName.trim(),
                 handicap_index: parseFloat(handicap) || 12.0,
@@ -413,7 +473,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           className="p-3.5 mb-4 bg-rose-50 border border-rose-300 rounded-xl flex items-start gap-2.5 text-rose-800 text-xs leading-relaxed animate-in fade-in duration-200"
         >
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-          <span>{errors.general}</span>
+          <div className="flex-1">
+            <span>{errors.general}</span>
+            {canResendEmail && (
+              <button
+                type="button"
+                onClick={handleResendVerification}
+                disabled={isResending}
+                className="mt-2 block text-xs font-bold text-rose-900 underline hover:text-rose-950 disabled:opacity-50"
+              >
+                {isResending ? 'Resending verification email...' : 'Resend verification email to ' + email.trim()}
+              </button>
+            )}
+          </div>
         </div>
       )}
 

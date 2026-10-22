@@ -172,7 +172,7 @@ export const ProofUploadModal: React.FC<ProofUploadModalProps> = ({
                     type="file"
                     accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf"
                     onChange={handleFileChange}
-                    className="sr-only"
+                    className="absolute w-px h-px opacity-0"
                   />
                 </label>
                 <p className="pl-1">or drag & drop</p>

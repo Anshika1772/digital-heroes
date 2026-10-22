@@ -26,10 +26,12 @@ export const RecentScoresList: React.FC<RecentScoresListProps> = ({
   onEditScore,
   onDeleteScore,
 }) => {
-  // Sort in reverse chronological order (newest date first)
-  const sortedScores = [...scores].sort(
-    (a, b) => new Date(b.scoreDate).getTime() - new Date(a.scoreDate).getTime()
-  );
+  // Sort in reverse chronological order (newest date first, then newest creation)
+  const sortedScores = [...scores].sort((a, b) => {
+    const diff = new Date(b.scoreDate).getTime() - new Date(a.scoreDate).getTime();
+    if (diff !== 0) return diff;
+    return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+  });
 
   // Take strictly the latest five scores
   const latestFive = sortedScores.slice(0, 5);

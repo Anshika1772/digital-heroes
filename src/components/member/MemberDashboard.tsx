@@ -20,8 +20,8 @@ interface MemberDashboardProps {
     courseName: string;
     holesPlayed: 9 | 18;
     notes?: string;
-  }) => { success: boolean; error?: string };
-  onUpdateScore: (score: StablefordScore) => { success: boolean; error?: string };
+  }) => { success: boolean; error?: string } | Promise<{ success: boolean; error?: string }>;
+  onUpdateScore: (score: StablefordScore) => { success: boolean; error?: string } | Promise<{ success: boolean; error?: string }>;
   onDeleteScore: (scoreId: string) => void;
   onSelectCharity: (charityId: string) => void;
   onSubmitWinnerProof: (winnerId: string, proofUrl: string, description: string) => void;
@@ -63,7 +63,7 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
     setIsScoreModalOpen(true);
   };
 
-  const handleScoreSubmit = (scoreData: {
+  const handleScoreSubmit = async (scoreData: {
     scoreDate: string;
     stablefordPoints: number;
     courseName: string;
@@ -71,12 +71,12 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
     notes?: string;
   }) => {
     if (editingScore) {
-      return onUpdateScore({
+      return await onUpdateScore({
         ...editingScore,
         ...scoreData,
       });
     } else {
-      return onAddScore(scoreData);
+      return await onAddScore(scoreData);
     }
   };
 

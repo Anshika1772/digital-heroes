@@ -13,7 +13,7 @@ interface ScoreEntryModalProps {
     courseName: string;
     holesPlayed: 9 | 18;
     notes?: string;
-  }) => { success: boolean; error?: string };
+  }) => { success: boolean; error?: string } | Promise<{ success: boolean; error?: string }>;
   editScore?: StablefordScore | null;
 }
 
@@ -115,7 +115,7 @@ export const ScoreEntryModal: React.FC<ScoreEntryModalProps> = ({
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
 
@@ -124,7 +124,7 @@ export const ScoreEntryModal: React.FC<ScoreEntryModalProps> = ({
     setIsSubmitting(true);
     const points = parseInt(stablefordPoints, 10);
 
-    const res = onSubmit({
+    const res = await onSubmit({
       courseName: courseName.trim(),
       scoreDate,
       stablefordPoints: points,
