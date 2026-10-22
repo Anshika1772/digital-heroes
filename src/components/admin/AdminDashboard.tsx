@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GolferProfile, Charity, StablefordScore, WinnerRecord, Draw } from '../../types';
+import { GolferProfile, Charity, StablefordScore, WinnerRecord, Draw, DrawSimulationResult } from '../../types';
 import { AnalyticsOverview } from './AnalyticsOverview';
 import { UsersManagement } from './UsersManagement';
 import { CharitiesManagement } from './CharitiesManagement';
@@ -27,6 +27,7 @@ interface AdminDashboardProps {
   onAddCharity: (charity: Omit<Charity, 'id'>) => void;
   onUpdateCharity: (charity: Charity) => void;
   onExecuteDraw: (drawId: string) => { success: boolean; winner?: WinnerRecord; error?: string };
+  onPublishDrawResults?: (drawId: string, simulation: DrawSimulationResult, winnerRecords: WinnerRecord[]) => void;
   onVerifyWinner: (winnerId: string, status: 'verified' | 'rejected', notes?: string) => void;
   onUpdatePayout: (winnerId: string, status: 'pending' | 'processing' | 'paid', reference?: string) => void;
   onExitAdmin: () => void;
@@ -44,6 +45,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onAddCharity,
   onUpdateCharity,
   onExecuteDraw,
+  onPublishDrawResults,
   onVerifyWinner,
   onUpdatePayout,
   onExitAdmin,
@@ -169,7 +171,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {activeTab === 'draws' && (
             <DrawSimulation
               draws={draws}
+              profiles={profiles}
+              scores={scores}
               onExecuteDraw={onExecuteDraw}
+              onPublishDrawResults={onPublishDrawResults}
             />
           )}
 

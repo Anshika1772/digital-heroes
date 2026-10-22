@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { WinnerRecord } from '../../types';
+import { uploadWinnerProofFile } from '../../lib/storage';
 import { Upload, CheckCircle2, ShieldCheck, AlertCircle, FileText, Image, FileUp, X } from 'lucide-react';
 
 interface ProofUploadModalProps {
@@ -72,7 +73,7 @@ export const ProofUploadModal: React.FC<ProofUploadModalProps> = ({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setDescriptionError(null);
@@ -90,7 +91,7 @@ export const ProofUploadModal: React.FC<ProofUploadModalProps> = ({
       return;
     }
 
-    if (!previewUrl) {
+    if (!previewUrl && !selectedFile) {
       setErrorMsg('Please select a valid scorecard document to upload.');
       return;
     }
@@ -98,22 +99,35 @@ export const ProofUploadModal: React.FC<ProofUploadModalProps> = ({
     setIsUploading(true);
     setUploadProgress(15);
 
-    // Simulate reliable upload progression with error tolerance
-    const interval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 90) {
-          clearInterval(interval);
-          setTimeout(() => {
-            setUploadProgress(100);
-            setIsUploading(false);
-            onSubmitProof(winnerRecord.id, previewUrl, trimmedDesc);
-            onClose();
-          }, 300);
-          return 90;
+    try {
+      let finalProofUrl = previewUrl;
+
+      // If user picked a new file, perform genuine upload to Supabase Storage
+      if (selectedFile) {
+        setUploadProgress(50);
+        const uploadRes = await uploadWinnerProofFile(
+          selectedFile,
+          winnerRecord.userId,
+          winnerRecord.id
+        );
+
+        if (!uploadRes.success) {
+          setErrorMsg(uploadRes.error || 'Failed to upload document to secure storage.');
+          setIsUploading(false);
+          return;
         }
-        return prev + 25;
-      });
-    }, 150);
+
+        finalProofUrl = uploadRes.url || previewUrl;
+      }
+
+      setUploadProgress(100);
+      setIsUploading(false);
+      onSubmitProof(winnerRecord.id, finalProofUrl, trimmedDesc);
+      onClose();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'An unexpected error occurred during proof upload.');
+      setIsUploading(false);
+    }
   };
 
   return (

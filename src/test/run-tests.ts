@@ -11,14 +11,21 @@ if (typeof localStorage === 'undefined' || localStorage === null) {
 
 import { runValidationAudit } from './validation-audit';
 
-console.log('--- DIGITAL HEROES VALIDATION & ERROR-HANDLING AUDIT ---');
-const { passed, failed, results } = runValidationAudit();
-results.forEach(r => console.log(r));
-console.log('---------------------------------------------------------');
-console.log(`TOTAL PASSED: ${passed} | TOTAL FAILED: ${failed}`);
+async function main() {
+  console.log('--- DIGITAL HEROES VALIDATION & ERROR-HANDLING AUDIT ---');
+  const { passed, failed, results } = await runValidationAudit();
+  results.forEach(r => console.log(r));
+  console.log('---------------------------------------------------------');
+  console.log(`TOTAL PASSED: ${passed} | TOTAL FAILED: ${failed}`);
 
-if (failed > 0) {
-  process.exit(1);
-} else {
-  console.log('ALL VALIDATION AUDIT TESTS COMPLETED SUCCESSFULLY.');
+  if (failed > 0) {
+    process.exit(1);
+  } else {
+    console.log('ALL VALIDATION AUDIT TESTS COMPLETED SUCCESSFULLY.');
+  }
 }
+
+main().catch(err => {
+  console.error('Test runner failure:', err);
+  process.exit(1);
+});

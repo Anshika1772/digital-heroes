@@ -6,7 +6,8 @@ import { CharitySelector } from './CharitySelector';
 import { DrawParticipationCard } from './DrawParticipationCard';
 import { WinningsCard } from './WinningsCard';
 import { Badge } from '../common/Badge';
-import { Flag, Sparkles, User, Award, ShieldCheck, HeartHandshake } from 'lucide-react';
+import { Button } from '../common/Button';
+import { Flag, Sparkles, User, Award, ShieldCheck, HeartHandshake, CreditCard, AlertTriangle } from 'lucide-react';
 
 interface MemberDashboardProps {
   currentUser: GolferProfile;
@@ -26,6 +27,8 @@ interface MemberDashboardProps {
   onSelectCharity: (charityId: string) => void;
   onSubmitWinnerProof: (winnerId: string, proofUrl: string, description: string) => void;
   onAddDirectDonation?: (amount: number, charityId: string) => { success: boolean; error?: string };
+  onOpenCheckout?: (plan?: 'monthly' | 'yearly') => void;
+  onCancelSubscription?: () => void;
 }
 
 export const MemberDashboard: React.FC<MemberDashboardProps> = ({
@@ -40,6 +43,8 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
   onSelectCharity,
   onSubmitWinnerProof,
   onAddDirectDonation,
+  onOpenCheckout,
+  onCancelSubscription,
 }) => {
   const [isScoreModalOpen, setIsScoreModalOpen] = useState(false);
   const [editingScore, setEditingScore] = useState<StablefordScore | null>(null);
@@ -84,6 +89,33 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
     <div className="py-10 bg-cream-100 min-h-screen">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
         
+        {/* Lapsed / Inactive Membership Alert Banner */}
+        {!currentUser.membershipActive && (
+          <div className="p-4 sm:p-5 rounded-2xl bg-amber-50 border-2 border-amber-300 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm animate-in fade-in duration-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-200 text-amber-900 flex items-center justify-center shrink-0">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h4 className="font-serif font-bold text-forest-950 text-sm sm:text-base">
+                  Membership Inactive — Draw Entries Paused
+                </h4>
+                <p className="text-xs text-ink-600">
+                  Activate or renew your subscription to enter monthly jackpot draws and continue supporting your chosen non-profit cause.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="lime"
+              size="sm"
+              onClick={() => onOpenCheckout?.('monthly')}
+              className="shrink-0 font-bold"
+            >
+              Activate Membership ($29/mo)
+            </Button>
+          </div>
+        )}
+
         {/* Profile Identity Banner */}
         <div className="bg-cream-50 rounded-2xl p-6 sm:p-8 border border-stone-200 shadow-refined flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="flex items-center gap-5">
@@ -170,6 +202,68 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
 
           {/* Right Column (5 cols): Draw Participation & Charity Selection */}
           <div className="lg:col-span-5 space-y-8">
+            {/* Subscription & Giving Plan Card */}
+            <div className="bg-cream-50 rounded-2xl p-6 border border-stone-200 shadow-refined space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-stone-200">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-forest-900 text-lime-400 flex items-center justify-center">
+                    <CreditCard className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h4 className="font-serif font-bold text-forest-950 text-base">Subscription & Giving Plan</h4>
+                    <p className="text-[11px] text-ink-500 font-mono">PCI-compliant Stripe verified patronage</p>
+                  </div>
+                </div>
+                <Badge variant={currentUser.membershipActive ? 'lime' : 'stone'} size="sm">
+                  {currentUser.membershipActive ? 'ACTIVE' : 'LAPSED'}
+                </Badge>
+              </div>
+
+              <div className="space-y-2 text-xs text-ink-700">
+                <div className="flex justify-between py-1 border-b border-stone-100">
+                  <span className="text-ink-500 font-mono">Plan Tier</span>
+                  <span className="font-bold text-forest-950">
+                    {currentUser.membershipTier === 'yearly' ? 'Yearly Hero Patron ($290/yr)' : 'Monthly Patron ($29/mo)'}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-stone-100">
+                  <span className="text-ink-500 font-mono">Charity Allocation</span>
+                  <span className="font-bold text-emerald-800">50% Monthly Escrowed</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-stone-100">
+                  <span className="text-ink-500 font-mono">Next Renewal</span>
+                  <span className="font-bold font-mono">Nov 1, 2026</span>
+                </div>
+                <div className="flex justify-between py-1">
+                  <span className="text-ink-500 font-mono">Draw Eligibility</span>
+                  <span className={`font-bold ${currentUser.membershipActive ? 'text-forest-900' : 'text-rose-700'}`}>
+                    {currentUser.membershipActive ? '✓ 10 Base Tickets Active' : '✕ Paused (Renewal required)'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="pt-2 flex items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="w-full text-xs font-bold"
+                  onClick={() => onOpenCheckout?.(currentUser.membershipTier === 'yearly' ? 'monthly' : 'yearly')}
+                >
+                  {currentUser.membershipTier === 'yearly' ? 'Switch to Monthly ($29/mo)' : 'Upgrade to Yearly (Save 17%)'}
+                </Button>
+                {currentUser.membershipActive && onCancelSubscription && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs text-rose-700 hover:bg-rose-50 border-rose-200"
+                    onClick={onCancelSubscription}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            </div>
+
             {/* Upcoming Draw Card */}
             <DrawParticipationCard
               draw={upcomingDraw}

@@ -415,3 +415,66 @@ VALUES
     ('d1111111-1111-1111-1111-111111111111', 'The Autumn Invitational Major Draw', 'November 2026', NOW() + INTERVAL '14 days', 'scheduled', 'Titleist Custom Fitted Works + $5,000 Travel Stipend', 8500.00, 50, 1420),
     ('d2222222-2222-2222-2222-222222222222', 'October Links Championship Draw', 'October 2026', NOW() - INTERVAL '16 days', 'completed', 'Scotty Cameron Tour Prototype & Bandon Dunes Trip', 6200.00, 50, 1280)
 ON CONFLICT (id) DO NOTHING;
+
+-- ==============================================================================
+-- STORAGE CONFIGURATION: WINNER PROOF SCORECARDS BUCKET & RLS
+-- ==============================================================================
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+    'winner-proofs',
+    'winner-proofs',
+    false, -- Private bucket
+    5242880, -- 5 MB limit
+    ARRAY['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+)
+ON CONFLICT (id) DO UPDATE SET
+    public = EXCLUDED.public,
+    file_size_limit = EXCLUDED.file_size_limit,
+    allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+DROP POLICY IF EXISTS "Users can upload their own winner proofs" ON storage.objects;
+CREATE POLICY "Users can upload their own winner proofs"
+ON storage.objects
+FOR INSERT
+TO authenticated
+WITH CHECK (
+    bucket_id = 'winner-proofs' AND
+    (storage.foldername(name))[1] = auth.uid()::text
+);
+
+DROP POLICY IF EXISTS "Users can read own winner proofs or admin all" ON storage.objects;
+CREATE POLICY "Users can read own winner proofs or admin all"
+ON storage.objects
+FOR SELECT
+TO authenticated
+USING (
+    bucket_id = 'winner-proofs' AND (
+        (storage.foldername(name))[1] = auth.uid()::text
+        OR public.is_admin()
+    )
+);
+
+DROP POLICY IF EXISTS "Users can update own winner proofs or admin all" ON storage.objects;
+CREATE POLICY "Users can update own winner proofs or admin all"
+ON storage.objects
+FOR UPDATE
+TO authenticated
+USING (
+    bucket_id = 'winner-proofs' AND (
+        (storage.foldername(name))[1] = auth.uid()::text
+        OR public.is_admin()
+    )
+);
+
+DROP POLICY IF EXISTS "Users can delete own winner proofs or admin all" ON storage.objects;
+CREATE POLICY "Users can delete own winner proofs or admin all"
+ON storage.objects
+FOR DELETE
+TO authenticated
+USING (
+    bucket_id = 'winner-proofs' AND (
+        (storage.foldername(name))[1] = auth.uid()::text
+        OR public.is_admin()
+    )
+);

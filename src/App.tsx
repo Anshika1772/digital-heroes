@@ -5,7 +5,10 @@ import {
   StablefordScore, 
   Draw, 
   WinnerRecord, 
-  ToastMessage 
+  ToastMessage,
+  MembershipTier,
+  SubscriptionDetails,
+  DrawSimulationResult
 } from './types';
 import { MockStore } from './lib/mockStore';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
@@ -31,6 +34,11 @@ import { MemberDashboard } from './components/member/MemberDashboard';
 // Admin Components
 import { AdminDashboard } from './components/admin/AdminDashboard';
 
+// Modals
+import { CheckoutModal } from './components/subscription/CheckoutModal';
+import { DonationModal } from './components/charity/DonationModal';
+import { CharityDetailsModal } from './components/charity/CharityDetailsModal';
+
 const isUUID = (str?: string | null): boolean =>
   Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
 
@@ -48,6 +56,14 @@ export function App() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Subscriptions & Philanthropic Modals State
+  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
+  const [checkoutPlan, setCheckoutPlan] = useState<MembershipTier>('yearly');
+  const [isDonationModalOpen, setIsDonationModalOpen] = useState(false);
+  const [donationCharityId, setDonationCharityId] = useState<string>('charity-1');
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [selectedCharityDetails, setSelectedCharityDetails] = useState<Charity | null>(null);
 
   // Toast Helpers
   const addToast = (type: 'success' | 'error' | 'info', message: string, title?: string) => {
@@ -72,7 +88,8 @@ export function App() {
         .from('scores')
         .select('*')
         .eq('user_id', userId)
-        .order('score_date', { ascending: false });
+        .order('score_date', { ascending: false })
+        .limit(5); // Retain strictly latest five scores per golfer
 
       if (!error && data) {
         const liveScores: StablefordScore[] = data.map((s: any) => ({
@@ -382,7 +399,27 @@ export function App() {
             createdAt: data.created_at || new Date().toISOString(),
           };
 
-          setScores(prev => [newScore, ...prev]);
+          // Physical roll-off in Supabase: retain strictly latest 5 scores
+          try {
+            const { data: userAllScores } = await supabase
+              .from('scores')
+              .select('id, score_date')
+              .eq('user_id', currentUser.id)
+              .order('score_date', { ascending: false });
+
+            if (userAllScores && userAllScores.length > 5) {
+              const excessIds = userAllScores.slice(5).map((s: any) => s.id);
+              await supabase.from('scores').delete().in('id', excessIds);
+            }
+          } catch (pruneErr) {
+            console.warn('Non-fatal: could not prune older scores in Supabase:', pruneErr);
+          }
+
+          setScores(prev => {
+            const userOlder = prev.filter(s => s.userId === currentUser.id).slice(0, 4);
+            const otherUsers = prev.filter(s => s.userId !== currentUser.id);
+            return [newScore, ...userOlder, ...otherUsers];
+          });
 
           // Also mirror in MockStore for fallback
           MockStore.addScore({
@@ -479,9 +516,27 @@ export function App() {
     addToast('info', 'Score record removed.');
   };
 
-  // Handle Charity Change
-  const handleSelectCharity = (charityId: string) => {
+  // Handle Charity Change (Persists to Supabase public.profiles)
+  const handleSelectCharity = async (charityId: string) => {
     if (!currentUser) return;
+
+    if (isSupabaseConfigured && supabase && isUUID(currentUser.id)) {
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ selected_charity_id: charityId })
+          .eq('id', currentUser.id);
+
+        if (error) {
+          addToast('error', `Failed to update cause in database: ${error.message}`, 'Database Error');
+          return;
+        }
+      } catch (err: any) {
+        addToast('error', `Network error saving cause: ${err.message || 'Unknown error'}`, 'Sync Error');
+        return;
+      }
+    }
+
     const updated = MockStore.updateProfile({
       ...currentUser,
       selectedCharityId: charityId,
@@ -489,11 +544,92 @@ export function App() {
     setCurrentUser(updated);
     refreshAllState();
     const ch = charities.find(c => c.id === charityId);
-    addToast('success', `Your 50% monthly allocation is now directed to ${ch?.name || 'selected cause'}.`, 'Charity Updated');
+    addToast('success', `Your monthly allocation is now directed to ${ch?.name || 'selected cause'}.`, 'Charity Updated');
   };
 
-  // Handle Winner Proof Submit
-  const handleSubmitWinnerProof = (winnerId: string, proofUrl: string, description: string) => {
+  // Subscription Handlers
+  const handleOpenCheckout = (plan: MembershipTier = 'yearly') => {
+    setCheckoutPlan(plan);
+    setIsCheckoutModalOpen(true);
+  };
+
+  // Subscription Preferences (PCI-Safe: Does NOT fake payment or tamper with membershipActive)
+  const handleSavePreferences = async (plan: MembershipTier, charityId: string, charityPercent: number) => {
+    setIsCheckoutModalOpen(false);
+    if (currentUser) {
+      const updatedUser: GolferProfile = {
+        ...currentUser,
+        membershipTier: plan,
+        selectedCharityId: charityId,
+      };
+      MockStore.updateProfile(updatedUser);
+      setCurrentUser(updatedUser);
+
+      if (isSupabaseConfigured && supabase && isUUID(currentUser.id)) {
+        try {
+          await supabase.from('profiles').update({
+            membership_tier: plan,
+            selected_charity_id: charityId,
+          }).eq('id', currentUser.id);
+        } catch (e) {
+          console.warn('Failed to update subscription preferences in Supabase:', e);
+        }
+      }
+    }
+    refreshAllState();
+    addToast(
+      'info',
+      `Giving preferences saved (${plan.toUpperCase()} Patron tier, ${charityPercent}% allocated). Membership activation occurs upon verified billing confirmation.`,
+      'Preferences Recorded'
+    );
+  };
+
+  const handleCancelSubscription = async () => {
+    if (!currentUser) return;
+    const confirmed = window.confirm('Are you sure you want to pause or cancel your subscription? Your draw entries will be suspended at cycle end.');
+    if (!confirmed) return;
+
+    const updatedUser: GolferProfile = {
+      ...currentUser,
+      membershipActive: false,
+    };
+    MockStore.updateProfile(updatedUser);
+    setCurrentUser(updatedUser);
+
+    if (isSupabaseConfigured && supabase && isUUID(currentUser.id)) {
+      try {
+        await supabase.from('profiles').update({
+          membership_active: false,
+        }).eq('id', currentUser.id);
+      } catch (e) {
+        console.warn('Failed to update membership status in Supabase:', e);
+      }
+    }
+    refreshAllState();
+    addToast('info', 'Subscription cancelled. Draw entries paused.', 'Subscription Updated');
+  };
+
+  // Handle Winner Proof Submit (Safely persists to Supabase winners table)
+  const handleSubmitWinnerProof = async (winnerId: string, proofUrl: string, description: string) => {
+    if (isSupabaseConfigured && supabase && isUUID(winnerId)) {
+      try {
+        const { error } = await supabase.from('winners').update({
+          proof_url: proofUrl,
+          proof_description: description,
+          verification_status: 'pending',
+          updated_at: new Date().toISOString()
+        }).eq('id', winnerId);
+
+        if (error) {
+          addToast('error', `Failed to record proof in database: ${error.message}`, 'Upload Failed');
+          return;
+        }
+      } catch (e: any) {
+        addToast('error', `Network error saving proof: ${e.message || 'Connection failed'}`, 'Upload Failed');
+        return;
+      }
+    }
+
     const res = MockStore.submitWinnerProof(winnerId, proofUrl, description);
     if (res.success) {
       refreshAllState();
@@ -501,6 +637,48 @@ export function App() {
     } else {
       addToast('error', res.error || 'Failed to submit proof.');
     }
+  };
+
+  // Handle Publishing Verified Draw Results
+  const handlePublishDrawResults = async (
+    drawId: string,
+    simulation: DrawSimulationResult,
+    winnerRecords: WinnerRecord[]
+  ) => {
+    setDraws(prev => prev.map(d => d.id === drawId ? { ...d, status: 'completed' as const } : d));
+    setWinners(prev => [...winnerRecords, ...prev]);
+
+    winnerRecords.forEach(w => MockStore.addWinner(w));
+    const d = MockStore.getDraws().find(dr => dr.id === drawId);
+    if (d) {
+      MockStore.updateDraw({ ...d, status: 'completed' });
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('draws').update({ status: 'completed' }).eq('id', drawId);
+        const dbWinners = winnerRecords.filter(w => isUUID(w.userId)).map(w => ({
+          draw_id: isUUID(w.drawId) ? w.drawId : undefined,
+          user_id: w.userId,
+          prize_title: w.prizeTitle,
+          prize_value_usd: w.prizeValueUsd,
+          verification_status: 'pending',
+          payout_status: 'pending',
+        }));
+        if (dbWinners.length > 0) {
+          await supabase.from('winners').insert(dbWinners);
+        }
+      } catch (e) {
+        console.warn('Supabase publish draw sync error:', e);
+      }
+    }
+
+    refreshAllState();
+    addToast(
+      'success',
+      `Draw published! ${winnerRecords.length} prize claim(s) placed into verification queue.`,
+      'Verified Draw Complete'
+    );
   };
 
   // Handle Direct Donation Booster
@@ -528,9 +706,33 @@ export function App() {
     return res;
   };
 
-  // Handle Winner Verification (Admin)
-  const handleVerifyWinner = (winnerId: string, status: 'verified' | 'rejected', notes?: string) => {
-    const res = MockStore.verifyWinnerProof(currentUser?.id || '', winnerId, status, notes);
+  // Handle Winner Verification (Admin with Supabase persistence)
+  const handleVerifyWinner = async (winnerId: string, status: 'verified' | 'rejected', notes?: string) => {
+    if (currentUser?.role !== 'admin') {
+      addToast('error', 'Unauthorized: Only platform administrators can verify scorecard proofs.');
+      return;
+    }
+
+    if (isSupabaseConfigured && supabase && isUUID(winnerId)) {
+      try {
+        const { error } = await supabase.from('winners').update({
+          verification_status: status,
+          verification_notes: notes || null,
+          payout_status: status === 'verified' ? 'processing' : 'pending',
+          updated_at: new Date().toISOString(),
+        }).eq('id', winnerId);
+
+        if (error) {
+          addToast('error', `Database verification update failed: ${error.message}`, 'Verification Error');
+          return;
+        }
+      } catch (e: any) {
+        addToast('error', `Network error during verification: ${e.message}`, 'Verification Error');
+        return;
+      }
+    }
+
+    const res = MockStore.verifyWinnerProof(currentUser.id, winnerId, status, notes);
     if (res.success) {
       refreshAllState();
       addToast(
@@ -543,9 +745,33 @@ export function App() {
     }
   };
 
-  // Handle Payout Status Update (Admin)
-  const handleUpdatePayout = (winnerId: string, status: 'pending' | 'processing' | 'paid', ref?: string) => {
-    const res = MockStore.updatePayoutStatus(currentUser?.id || '', winnerId, status, ref);
+  // Handle Payout Status Update (Admin with Supabase persistence)
+  const handleUpdatePayout = async (winnerId: string, status: 'pending' | 'processing' | 'paid', ref?: string) => {
+    if (currentUser?.role !== 'admin') {
+      addToast('error', 'Unauthorized: Only platform administrators can authorize prize payouts.');
+      return;
+    }
+
+    if (isSupabaseConfigured && supabase && isUUID(winnerId)) {
+      try {
+        const { error } = await supabase.from('winners').update({
+          payout_status: status,
+          payout_reference: ref || null,
+          payout_date: status === 'paid' ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        }).eq('id', winnerId);
+
+        if (error) {
+          addToast('error', `Database payout update failed: ${error.message}`, 'Payout Error');
+          return;
+        }
+      } catch (e: any) {
+        addToast('error', `Network error updating payout: ${e.message}`, 'Payout Error');
+        return;
+      }
+    }
+
+    const res = MockStore.updatePayoutStatus(currentUser.id, winnerId, status, ref);
     if (res.success) {
       refreshAllState();
       addToast('success', `Payout updated to ${status.toUpperCase()} (${ref || 'N/A'}).`, 'Disbursement Updated');
@@ -648,6 +874,14 @@ export function App() {
                   setIsAuthModalOpen(true);
                 }
               }}
+              onOpenDetails={(charity) => {
+                setSelectedCharityDetails(charity);
+                setIsDetailsModalOpen(true);
+              }}
+              onOpenDonate={(charityId) => {
+                setDonationCharityId(charityId);
+                setIsDonationModalOpen(true);
+              }}
             />
 
             {/* Prize Tiers Section */}
@@ -657,8 +891,7 @@ export function App() {
                 if (currentUser) {
                   handleNavigate('member');
                 } else {
-                  setAuthMode('signup');
-                  setIsAuthModalOpen(true);
+                  handleOpenCheckout('yearly');
                 }
               }}
             />
@@ -666,8 +899,7 @@ export function App() {
             {/* Membership Plans Section */}
             <MembershipPlans
               onSelectPlan={(plan) => {
-                setAuthMode('signup');
-                setIsAuthModalOpen(true);
+                handleOpenCheckout(plan);
               }}
             />
 
@@ -701,6 +933,8 @@ export function App() {
               onSelectCharity={handleSelectCharity}
               onSubmitWinnerProof={handleSubmitWinnerProof}
               onAddDirectDonation={handleAddDirectDonation}
+              onOpenCheckout={handleOpenCheckout}
+              onCancelSubscription={handleCancelSubscription}
             />
           </div>
         )}
@@ -719,6 +953,7 @@ export function App() {
               onAddCharity={handleAddCharity}
               onUpdateCharity={handleUpdateCharity}
               onExecuteDraw={handleExecuteDraw}
+              onPublishDrawResults={handlePublishDrawResults}
               onVerifyWinner={handleVerifyWinner}
               onUpdatePayout={handleUpdatePayout}
               onExitAdmin={() => setActiveView('member')}
@@ -738,6 +973,47 @@ export function App() {
         profiles={profiles}
         onLogin={(user) => {
           handleSelectUser(user);
+        }}
+      />
+
+      {/* Stripe-Compliant Subscription Configuration Modal */}
+      <CheckoutModal
+        isOpen={isCheckoutModalOpen}
+        onClose={() => setIsCheckoutModalOpen(false)}
+        charities={charities.filter(c => c.active)}
+        initialPlan={checkoutPlan}
+        initialCharityId={currentUser?.selectedCharityId || charities[0]?.id}
+        onSavePreferences={handleSavePreferences}
+      />
+
+      {/* One-Time Direct Charity Donation Modal */}
+      <DonationModal
+        isOpen={isDonationModalOpen}
+        onClose={() => setIsDonationModalOpen(false)}
+        charities={charities.filter(c => c.active)}
+        initialCharityId={donationCharityId}
+        onDonate={(amount, charityId) => {
+          return handleAddDirectDonation(amount, charityId);
+        }}
+      />
+
+      {/* Non-Profit Impact & Program Details Modal */}
+      <CharityDetailsModal
+        isOpen={isDetailsModalOpen}
+        onClose={() => {
+          setIsDetailsModalOpen(false);
+          setSelectedCharityDetails(null);
+        }}
+        charity={selectedCharityDetails}
+        isSelected={currentUser?.selectedCharityId === selectedCharityDetails?.id}
+        onSelectAsPrimary={(id) => {
+          handleSelectCharity(id);
+          setIsDetailsModalOpen(false);
+        }}
+        onOpenDonate={(id) => {
+          setIsDetailsModalOpen(false);
+          setDonationCharityId(id);
+          setIsDonationModalOpen(true);
         }}
       />
 

@@ -600,6 +600,16 @@ export class MockStore {
     return { success: true, winner: newWinner };
   }
 
+  static addWinner(winner: WinnerRecord): void {
+    const winners = [winner, ...this.getWinners()];
+    saveToStorage('winners', winners);
+  }
+
+  static updateDraw(draw: Draw): void {
+    const draws = this.getDraws().map(d => d.id === draw.id ? draw : d);
+    saveToStorage('draws', draws);
+  }
+
   // Reset store to fresh mock data
   static resetToDefault(): void {
     localStorage.removeItem(STORAGE_KEY_PREFIX + 'profiles');
