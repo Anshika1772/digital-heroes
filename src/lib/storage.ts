@@ -60,16 +60,26 @@ export async function uploadWinnerProofFile(
   // 1. Genuine Supabase Storage Upload
   if (isSupabaseConfigured && supabase) {
     try {
+      // Verify authenticated session to ensure storage path matches auth.uid()
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) {
+        return {
+          success: false,
+          error: 'Authentication required: You must be signed in with a verified account to upload proof documents to secure storage.',
+        };
+      }
+
       const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
-      const cleanUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '');
+      // Always use the real authenticated user ID as the root folder to strictly satisfy Storage RLS
+      const effectiveUserId = user.id;
       const cleanWinnerId = winnerId.replace(/[^a-zA-Z0-9_-]/g, '');
-      const storagePath = `${cleanUserId}/${cleanWinnerId}_${Date.now()}.${ext}`;
+      const storagePath = `${effectiveUserId}/${cleanWinnerId}_${Date.now()}.${ext}`;
 
       const { data, error } = await supabase.storage
         .from(PROOF_BUCKET)
         .upload(storagePath, file, {
           cacheControl: '3600',
-          upsert: true,
+          upsert: false,
           contentType: file.type,
         });
 
